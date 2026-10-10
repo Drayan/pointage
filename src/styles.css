@@ -275,3 +275,26 @@ button:disabled { opacity: 0.45; cursor: default; }
   font-size: 14px; max-width: calc(100% - 40px); text-align: center; transition: opacity 0.3s;
 }
 .toast-out { opacity: 0; }
+
+/* ---------- Ajouts v1.1 ---------- */
+.line { flex-direction: row; align-items: center; justify-content: space-between; gap: 10px; }
+.line-main { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
+.line-go { color: var(--muted); flex-shrink: 0; display: inline-flex; padding: 6px; border-radius: 10px; background: var(--field); }
+.tag-warn { color: var(--warn-ink); background: var(--warn-bg); border-color: transparent; }
+.warn-text { color: var(--warn-strong); }
+.status-line { margin: 0; display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--live); padding: 0 4px; }
+.status-line.muted { color: var(--muted); }
+.banner-compact { flex-direction: row; align-items: center; gap: 10px; padding: 12px 16px; border-radius: 16px; font-size: 14px; }
+.banner-compact .banner-icon { margin-top: 0; }
+.link-btn { border: none; background: transparent; padding: 6px 0; color: var(--muted); font-size: 15px; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; min-height: 32px; }
+.toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-radius: 18px; line-height: 1.3; }
+.switch { appearance: none; -webkit-appearance: none; width: 51px; height: 31px; border-radius: 16px; background: var(--line); position: relative; flex-shrink: 0; transition: background 0.2s; margin: 0; }
+.switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.25); transition: transform 0.2s; }
+.switch:checked { background: var(--live); }
+.switch:checked::after { transform: translateX(20px); }
+.field-row .row-6 { flex-wrap: wrap; justify-content: flex-end; }
+.field-row input[type='date'].input-boxed { min-width: 0; max-width: 9.5em; }
+.field-row input[type='time'].input-boxed { min-width: 5.2em; }
+select.input-boxed { appearance: none; -webkit-appearance: none; border: none; padding-right: 22px; background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position: calc(100% - 12px) 50%, calc(100% - 7px) 50%; background-size: 5px 5px; background-repeat: no-repeat; background-color: var(--field); }
+.toast { display: flex; align-items: center; gap: 14px; text-align: left; width: max-content; max-width: min(360px, calc(100vw - 40px)); }
+.toast-action { border: none; background: transparent; color: inherit; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; padding: 6px 2px; min-height: 36px; }

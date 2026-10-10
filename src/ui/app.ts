@@ -1,7 +1,9 @@
 // Interface : trois onglets (Pointer, Historique, Réglages), la feuille de correction et les bandeaux.
 // Rendu par chaînes HTML et délégation d'événements, sans framework.
 
-import { fmtClock, fmtDuration, fmtEuro, fmtLongDate, fmtMonth, fmtShortDate, DOW_SHORT } from '../core/format';
+import { findAnomalies, type Anomaly } from '../core/anomalies';
+import { buildYearCsv } from '../core/csv';
+import { fmtClock, fmtDuration, fmtEuro, fmtLongDate, fmtMonth, fmtShortDate, DOW_SHORT, MONTHS } from '../core/format';
 import { legalHolidays, makeHolidayChecker, type HolidayChecker } from '../core/holidays';
 import { grossCents, linesFor, linesForSession, rateAt, sumLines, type DayLine } from '../core/split';
 import {
@@ -19,11 +21,13 @@ type Tab = 'pointer' | 'historique' | 'reglages';
 
 interface EditState {
   id: string | null; // null = nouvelle entrée
-  date: string;
+  startDate: string;
   startTime: string;
+  endDate: string;
   endTime: string;
   note: string;
-  wasOpen: boolean;
+  wasOpen: boolean; // la session éditée est en cours
+  keepOpen: boolean; // ne corriger que le début, la session continue
 }
 
 interface State {
@@ -38,6 +42,7 @@ interface State {
 
 const DAY = 24 * 60 * MINUTE;
 const BACKUP_REMINDER_DAYS = 35;
+const UNDO_MS = 6000;
 
 let state: State;
 let root: HTMLElement;
@@ -61,6 +66,7 @@ function isHoliday(): HolidayChecker {
 }
 
 const openSession = () => state.sessions.find((s) => s.end === null) ?? null;
+const closedSessions = () => state.sessions.filter((s) => s.end !== null);
 
 function monthLines(monthKey: string, sessions: readonly Session[] = state.sessions): DayLine[] {
   return linesFor(sessions, isHoliday(), now()).filter((l) => l.date.startsWith(monthKey));
@@ -70,14 +76,30 @@ function isStandalone(): boolean {
   return window.matchMedia('(display-mode: standalone)').matches || (navigator as { standalone?: boolean }).standalone === true;
 }
 
-function toast(message: string): void {
+/** Message bref en bas d'écran, avec éventuellement un bouton (Annuler). */
+function toast(message: string, action?: { label: string; run: () => void | Promise<void> }): void {
+  document.querySelector('.toast')?.remove();
   const el = document.createElement('div');
   el.className = 'toast';
   el.setAttribute('role', 'status');
-  el.textContent = message;
+  const text = document.createElement('span');
+  text.textContent = message;
+  el.append(text);
+  if (action) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'toast-action';
+    btn.textContent = action.label;
+    btn.addEventListener('click', () => {
+      el.remove();
+      void action.run();
+    });
+    el.append(btn);
+  }
   document.body.append(el);
-  setTimeout(() => el.classList.add('toast-out'), 2600);
-  setTimeout(() => el.remove(), 3000);
+  const life = action ? UNDO_MS : 2600;
+  setTimeout(() => el.classList.add('toast-out'), life);
+  setTimeout(() => el.remove(), life + 400);
 }
 
 /** « depuis 07:42 », « depuis hier 07:45 », « depuis ven 09/10 07:45 ». */
@@ -110,6 +132,14 @@ function rateContext(t: number): { label: string; kind: 'day' | 'night' } {
     : { label: 'Tarif nuit', kind: 'night' };
 }
 
+/** « de mars », « d'octobre ». */
+const deMonth = (name: string) => (/^[aeiouy]/i.test(name) ? `d'${name}` : `de ${name}`);
+
+function monthName(monthKey: string): string {
+  const [y, m] = monthKey.split('-').map(Number);
+  return `${MONTHS[m - 1]} ${y}`;
+}
+
 function tiles(dayMin: number, nightMin: number, withTotal = false): string {
   return `<div class="tiles ${withTotal ? 'tiles-3' : ''}">
     <div class="tile tile-day"><span class="tile-label">Jour</span><span class="tile-value mono">${fmtDuration(dayMin)}</span></div>
@@ -137,13 +167,19 @@ function backupReminderVisible(): boolean {
   return since > BACKUP_REMINDER_DAYS * DAY;
 }
 
+/** Mois précédent dont le relevé n'est pas encore parti (et dont le rappel n'a pas été écarté). */
+function pendingReleveMonth(): string | null {
+  const prev = addMonths(monthKeyOf(now()), -1);
+  if (state.settings.relevesSent[prev] || state.settings.releveReminderDismissed === prev) return null;
+  return monthLines(prev, closedSessions()).length ? prev : null;
+}
+
 function renderPointer(): string {
   const t = now();
   const s = openSession();
   const ctx = rateContext(t);
   const month = monthKeyOf(t);
-  const closed = state.sessions.filter((x) => x.end !== null);
-  const totals = sumLines(monthLines(month, closed));
+  const totals = sumLines(monthLines(month, closedSessions()));
   const gross = grossCents(totals.dayMin, totals.nightMin, state.settings.rateDayCents, state.settings.rateNightCents);
 
   let sessionCard: string;
@@ -155,7 +191,7 @@ function renderPointer(): string {
       <div class="session-head">
         <span class="dot ${warn ? 'dot-warn' : 'dot-live'}"></span>
         <span class="strong">Session en cours</span>
-        <span class="muted push">${sinceLabel(s.start)}</span>
+        <button type="button" class="link-btn push" data-action="edit" data-id="${s.id}" aria-label="Corriger l'heure de début">${sinceLabel(s.start)}</button>
       </div>
       <div class="chrono mono ${warn ? 'chrono-warn' : ''}" aria-live="polite">${fmtClock(elapsedMin)}</div>
       ${tiles(live.dayMin, live.nightMin)}
@@ -193,6 +229,17 @@ function renderPointer(): string {
         <button type="button" class="btn btn-small" data-action="apply-update">Mettre à jour</button></section>`
     : '';
 
+  const pending = pendingReleveMonth();
+  const releve = pending
+    ? `<section class="banner banner-info">
+        <span>Le relevé ${deMonth(monthName(pending))} n'a pas encore été envoyé.</span>
+        <div class="row-8">
+          <button type="button" class="btn btn-small" data-action="releve" data-month="${pending}">Envoyer</button>
+          <button type="button" class="btn btn-small btn-ghost" data-action="dismiss-releve" data-month="${pending}">Plus tard</button>
+        </div>
+      </section>`
+    : '';
+
   const backup = backupReminderVisible()
     ? `<section class="banner banner-info">
         <span>${state.settings.lastBackup ? `Dernière sauvegarde il y a ${Math.floor((t - state.settings.lastBackup) / DAY)} jours.` : 'Aucune sauvegarde pour l’instant.'}</span>
@@ -214,6 +261,7 @@ function renderPointer(): string {
     ${update}
     ${alert}
     ${sessionCard}
+    ${releve}
     <section class="card month-card" aria-label="Mois en cours">
       <div class="row-between">
         <span class="strong">${fmtMonth(month)}</span>
@@ -235,10 +283,26 @@ function renderPointer(): string {
 
 // ---------- Écran Historique ----------
 
+const ANOMALY_LABEL: Record<Anomaly, string> = { overlap: 'chevauchement', long: 'plus de 48 h' };
+
+function releveStatus(lines: readonly DayLine[]): string {
+  const sentAt = state.settings.relevesSent[state.month];
+  if (sentAt) {
+    const changed = state.sessions.some((s) => s.updatedAt > sentAt && lines.some((l) => l.sessionId === s.id));
+    return `<p class="status-line">${icons.check}<span>Relevé envoyé le ${fmtLongDate(dateKeyOf(sentAt)).toLowerCase()}${changed ? ' · <span class="warn-text">entrées modifiées depuis</span>' : ''}</span></p>`;
+  }
+  if (state.month < monthKeyOf(now()) && lines.some((l) => !l.open)) {
+    return '<p class="status-line muted">Relevé pas encore envoyé</p>';
+  }
+  return '';
+}
+
 function renderHistorique(): string {
   const lines = monthLines(state.month);
   const totals = sumLines(lines);
   const hc = isHoliday();
+  const anomalies = findAnomalies(state.sessions, now());
+  const flagged = new Set(lines.filter((l) => anomalies.has(l.sessionId)).map((l) => l.sessionId));
   const byDate = new Map<string, DayLine[]>();
   for (const l of lines) {
     const arr = byDate.get(l.date) ?? [];
@@ -261,17 +325,21 @@ function renderHistorique(): string {
             <div class="day-lines">
               ${ls
                 .map(
-                  (l) => `<button type="button" class="line" data-action="edit" data-id="${l.sessionId}" aria-label="Modifier ${fmtShortDate(date)} ${l.startLabel}">
-                    <span class="line-head">
-                      <span class="mono strong">${l.startLabel} → ${l.open ? '…' : l.endLabel}</span>
-                      ${l.manual ? '<span class="tag">manuelle</span>' : ''}
-                      ${l.open ? '<span class="tag tag-live">en cours</span>' : ''}
+                  (l) => `<button type="button" class="line" data-action="edit" data-id="${l.sessionId}" aria-label="Modifier ou supprimer : ${fmtShortDate(date)} ${l.startLabel}">
+                    <span class="line-main">
+                      <span class="line-head">
+                        <span class="mono strong">${l.startLabel} → ${l.open ? '…' : l.endLabel}</span>
+                        ${l.manual ? '<span class="tag">manuelle</span>' : ''}
+                        ${l.open ? '<span class="tag tag-live">en cours</span>' : ''}
+                        ${(anomalies.get(l.sessionId) ?? []).map((a) => `<span class="tag tag-warn">${ANOMALY_LABEL[a]}</span>`).join('')}
+                      </span>
+                      ${l.note ? `<span class="muted xsmall line-note">${esc(l.note)}</span>` : ''}
+                      <span class="row-6">
+                        <span class="chip chip-day mono">J ${fmtDuration(l.dayMin)}</span>
+                        <span class="chip chip-night mono">N ${fmtDuration(l.nightMin)}</span>
+                      </span>
                     </span>
-                    ${l.note ? `<span class="muted xsmall line-note">${esc(l.note)}</span>` : ''}
-                    <span class="row-6">
-                      <span class="chip chip-day mono">J ${fmtDuration(l.dayMin)}</span>
-                      <span class="chip chip-night mono">N ${fmtDuration(l.nightMin)}</span>
-                    </span>
+                    <span class="line-go">${icons.pencil}</span>
                   </button>`,
                 )
                 .join('')}
@@ -279,12 +347,19 @@ function renderHistorique(): string {
           </article>`;
         })
         .join('')
-    : `<p class="empty muted">Aucune prestation en ${fmtMonth(state.month).toLowerCase()}.</p>`;
+    : `<p class="empty muted">Aucune prestation en ${monthName(state.month)}.</p>`;
+
+  const warn = flagged.size
+    ? `<section class="banner banner-warn banner-compact" role="note">
+        <span class="banner-icon">${icons.alertSmall}</span>
+        <span>${flagged.size === 1 ? '1 entrée à vérifier' : `${flagged.size} entrées à vérifier`} avant l'envoi du relevé.</span>
+      </section>`
+    : '';
 
   return `<main class="screen screen-history" aria-label="Historique">
     <header class="header">
       <h1 class="title">Historique</h1>
-      <button type="button" class="btn btn-outline" data-action="releve" ${lines.length ? '' : 'disabled'}>${icons.file}<span>Relevé PDF</span></button>
+      <button type="button" class="btn btn-outline" data-action="releve" data-month="${state.month}" ${lines.some((l) => !l.open) ? '' : 'disabled'}>${icons.file}<span>Relevé PDF</span></button>
     </header>
     <div class="month-nav">
       <button type="button" class="icon-btn" data-action="month-prev" aria-label="Mois précédent">${icons.chevronLeft}</button>
@@ -292,6 +367,9 @@ function renderHistorique(): string {
       <button type="button" class="icon-btn" data-action="month-next" aria-label="Mois suivant">${icons.chevronRight}</button>
     </div>
     ${tiles(totals.dayMin, totals.nightMin, true)}
+    ${releveStatus(lines)}
+    ${warn}
+    ${days.length ? '<p class="hint">Touche une entrée pour la modifier ou la supprimer.</p>' : ''}
     <div class="day-list">${list}</div>
     <button type="button" class="fab" data-action="add">${icons.plus}<span>Ajouter</span></button>
   </main>`;
@@ -306,6 +384,7 @@ function renderReglages(): string {
   const upcoming = [...legalHolidays(year), ...legalHolidays(year + 1)].filter((h) => h.date >= today).slice(0, 4);
   const extras = [...st.extraHolidays].sort();
   const euros = (c: number) => (c / 100).toFixed(2).replace('.', ',').replace(/,00$/, '');
+  const years = [...new Set([year, ...state.sessions.map((s) => Number(dateKeyOf(s.start).slice(0, 4)))])].sort((a, b) => b - a);
 
   return `<main class="screen" aria-label="Réglages">
     <header class="header"><h1 class="title">Réglages</h1></header>
@@ -327,7 +406,16 @@ function renderReglages(): string {
         <label class="field-row"><span class="row-8"><span class="swatch swatch-night"></span>Nuit · WE · fériés</span>
           <span class="row-4 mono"><input class="input-rate mono" type="text" inputmode="decimal" data-field="rateNight" value="${euros(st.rateNightCents)}">€/h</span></label>
       </div>
-      <p class="hint">Servent uniquement à l'estimation brute. Jamais imprimés sur le relevé, jamais envoyés ailleurs.</p>
+      <p class="hint">Servent uniquement à l'estimation brute et à l'export comptable. Jamais imprimés sur le relevé, jamais envoyés ailleurs.</p>
+    </section>
+
+    <section class="section">
+      <h2>Nouvelle entrée</h2>
+      <div class="card list-card">
+        <label class="field-row">Début par défaut<input type="time" data-field="defaultStart" value="${st.defaultStart}" class="input-boxed mono"></label>
+        <label class="field-row">Fin par défaut<input type="time" data-field="defaultEnd" value="${st.defaultEnd}" class="input-boxed mono"></label>
+      </div>
+      <p class="hint">Pré-remplissent « Ajouter » dans l'historique. Le bouton Démarrer, lui, prend toujours l'heure du moment.</p>
     </section>
 
     <section class="section">
@@ -361,6 +449,17 @@ function renderReglages(): string {
     </section>
 
     <section class="section">
+      <h2>Export comptable</h2>
+      <div class="card stepper-card">
+        <label class="row-8">Année
+          <select id="export-year" class="input-boxed mono">${years.map((y) => `<option value="${y}">${y}</option>`).join('')}</select>
+        </label>
+        <button type="button" class="btn btn-small" data-action="export-year">${icons.download}<span>CSV</span></button>
+      </div>
+      <p class="hint">Toutes les prestations terminées de l'année, avec heures et montants bruts, puis un récapitulatif mensuel. S'ouvre dans Numbers ou Excel.</p>
+    </section>
+
+    <section class="section">
       <h2>Sauvegarde</h2>
       <div class="grid-2">
         <button type="button" class="btn btn-primary" data-action="export">Exporter</button>
@@ -381,42 +480,70 @@ function renderReglages(): string {
 
 // ---------- Feuille de correction ----------
 
-function editTimes(e: EditState): { start: number; end: number; nextDay: boolean } | null {
-  if (!e.date || !/^\d\d:\d\d$/.test(e.startTime) || !/^\d\d:\d\d$/.test(e.endTime)) return null;
-  if (e.startTime === e.endTime) return null;
-  const nextDay = e.endTime < e.startTime;
-  const start = instantOf(e.date, e.startTime);
-  const end = instantOf(nextDay ? addDays(e.date, 1) : e.date, e.endTime);
-  return end > start ? { start, end, nextDay } : null;
+const TIME_RE = /^\d\d:\d\d$/;
+
+/** Début et fin saisis ; `end` vaut null quand la session reste en cours. */
+function editTimes(e: EditState): { start: number; end: number | null } | null {
+  if (!e.startDate || !TIME_RE.test(e.startTime)) return null;
+  const start = instantOf(e.startDate, e.startTime);
+  if (e.keepOpen) return start <= now() ? { start, end: null } : null;
+  if (!e.endDate || !TIME_RE.test(e.endTime)) return null;
+  const end = instantOf(e.endDate, e.endTime);
+  return end > start ? { start, end } : null;
 }
 
 function previewHtml(e: EditState): string {
   const t = editTimes(e);
-  if (!t) return '<p class="muted small">Indique une heure de fin différente de l’heure de début.</p>';
-  const lines = linesForSession({ id: 'p', start: t.start, end: t.end, manual: true, note: '' }, isHoliday(), now());
+  if (!t) {
+    return e.keepOpen
+      ? '<p class="muted small">Le début ne peut pas être dans le futur.</p>'
+      : '<p class="muted small">La fin doit être après le début.</p>';
+  }
+  const end = t.end ?? floorToMinute(now());
+  const lines = linesForSession({ id: 'p', start: t.start, end, manual: true, note: '' }, isHoliday(), now());
   const sum = sumLines(lines);
   const detail = lines
-    .map((l) => `${fmtShortDate(l.date)} ${l.startLabel}–${l.endLabel} : jour ${fmtDuration(l.dayMin)}, nuit ${fmtDuration(l.nightMin)}`)
+    .map((l) => `${fmtShortDate(l.date)} ${l.startLabel}–${t.end === null && l === lines.at(-1) ? 'maintenant' : l.endLabel} : jour ${fmtDuration(l.dayMin)}, nuit ${fmtDuration(l.nightMin)}`)
     .join('<br>');
+  const long = (end - t.start) / 3_600_000 > 48 ? '<strong class="warn-text">Plus de 48 h : vérifie les dates.</strong><br>' : '';
   return `${tiles(sum.dayMin, sum.nightMin, true)}
-    <p class="muted xsmall">${t.nextDay ? '<strong>Fin le lendemain.</strong><br>' : ''}${detail}</p>`;
+    <p class="muted xsmall">${long}${detail}</p>`;
 }
 
 function renderEdit(e: EditState): string {
   const existing = e.id !== null;
-  return `<div class="overlay" role="dialog" aria-modal="true" aria-label="${existing ? 'Modifier la prestation' : 'Nouvelle prestation'}">
+  const title = !existing ? 'Nouvelle prestation' : e.wasOpen ? (e.keepOpen ? 'Session en cours' : 'Clôturer la session') : 'Modifier la prestation';
+  return `<div class="overlay" role="dialog" aria-modal="true" aria-label="${title}">
     <div class="overlay-top">
       <button type="button" class="back-btn" data-action="edit-cancel">${icons.chevronLeft}<span>Annuler</span></button>
     </div>
     <div class="overlay-body">
-      <div class="stack-4">
-        <h1 class="title">${existing ? (e.wasOpen ? 'Clôturer la session' : 'Modifier la prestation') : 'Nouvelle prestation'}</h1>
-        <span class="muted small">${e.date ? fmtLongDate(e.date) : ''}</span>
-      </div>
+      <h1 class="title">${title}</h1>
+      ${
+        e.wasOpen
+          ? `<label class="card toggle-row"><span>Session toujours en cours<br><span class="muted small">ne corriger que l'heure de début</span></span>
+              <input type="checkbox" class="switch" data-toggle="keepOpen" ${e.keepOpen ? 'checked' : ''}></label>`
+          : ''
+      }
       <div class="card list-card">
-        <label class="field-row">Date<input type="date" data-edit="date" value="${e.date}" class="input-boxed mono"></label>
-        <label class="field-row">Début<input type="time" data-edit="startTime" value="${e.startTime}" class="input-boxed mono"></label>
-        <label class="field-row">Fin<input type="time" data-edit="endTime" value="${e.endTime}" class="input-boxed mono input-strong"></label>
+        <div class="field-row">
+          <span>Début</span>
+          <span class="row-6">
+            <input type="date" data-edit="startDate" value="${e.startDate}" class="input-boxed mono" aria-label="Date de début">
+            <input type="time" data-edit="startTime" value="${e.startTime}" class="input-boxed mono" aria-label="Heure de début">
+          </span>
+        </div>
+        ${
+          e.keepOpen
+            ? ''
+            : `<div class="field-row">
+                <span>Fin</span>
+                <span class="row-6">
+                  <input type="date" data-edit="endDate" value="${e.endDate}" class="input-boxed mono" aria-label="Date de fin">
+                  <input type="time" data-edit="endTime" value="${e.endTime}" class="input-boxed mono input-strong" aria-label="Heure de fin">
+                </span>
+              </div>`
+        }
       </div>
       <label class="stack-8 strong small">Note (facultative)
         <input type="text" data-edit="note" value="${esc(e.note)}" class="input-note" placeholder="Ex. oubli de pointage">
@@ -425,7 +552,11 @@ function renderEdit(e: EditState): string {
         <span class="muted small strong">Aperçu du calcul</span>
         <div id="edit-preview">${previewHtml(e)}</div>
       </section>
-      <p class="info-line">${icons.info}<span>L'entrée sera marquée « manuelle » et signalée par un astérisque sur le relevé.</span></p>
+      <p class="info-line">${icons.info}<span>${
+        e.keepOpen
+          ? 'Seul le début change ; la session continue de tourner.'
+          : 'L’entrée sera marquée « manuelle » et signalée par un astérisque sur le relevé.'
+      }</span></p>
     </div>
     <div class="overlay-actions">
       <button type="button" class="btn btn-primary btn-lg" data-action="edit-save">Enregistrer</button>
@@ -454,10 +585,15 @@ function navButton(tab: Tab, label: string, icon: string): string {
   return `<button type="button" class="tab ${active ? 'tab-active' : ''}" data-action="tab" data-tab="${tab}" ${active ? 'aria-current="page"' : ''}>${icon}<span>${label}</span></button>`;
 }
 
+function screenLabel(): string {
+  return state.tab === 'pointer' ? 'Pointer' : state.tab === 'historique' ? 'Historique' : 'Réglages';
+}
+
 function render(): void {
   const screen = state.tab === 'pointer' ? renderPointer() : state.tab === 'historique' ? renderHistorique() : renderReglages();
   const scroller = root.querySelector('.screen');
   const scroll = scroller && scroller.getAttribute('aria-label') === screenLabel() ? scroller.scrollTop : 0;
+  const yearSel = root.querySelector<HTMLSelectElement>('#export-year')?.value;
   root.innerHTML = `${screen}
     <nav class="tabbar" aria-label="Navigation principale">
       ${navButton('pointer', 'Pointer', icons.clock)}
@@ -468,10 +604,8 @@ function render(): void {
     ${state.backupSheet ? renderBackupSheet() : ''}`;
   const next = root.querySelector('.screen');
   if (next && scroll) next.scrollTop = scroll;
-}
-
-function screenLabel(): string {
-  return state.tab === 'pointer' ? 'Pointer' : state.tab === 'historique' ? 'Historique' : 'Réglages';
+  const sel = root.querySelector<HTMLSelectElement>('#export-year');
+  if (sel && yearSel) sel.value = yearSel;
 }
 
 // ---------- Actions ----------
@@ -488,46 +622,78 @@ async function upsert(s: Session): Promise<void> {
   else state.sessions.push(s);
 }
 
+async function drop(id: string): Promise<void> {
+  await removeSession(id);
+  state.sessions = state.sessions.filter((x) => x.id !== id);
+}
+
+/** Remet une session dans son état d'avant (ou la retire si elle n'existait pas). */
+function undoTo(previous: Session | null, id: string): () => Promise<void> {
+  return async () => {
+    if (previous) await upsert(previous);
+    else await drop(id);
+    render();
+    toast('Action annulée.');
+  };
+}
+
 async function startSession(): Promise<void> {
   if (openSession()) return;
   const t = floorToMinute(now());
-  await upsert({ id: newId(), start: t, end: null, manual: false, note: '', updatedAt: now() });
+  const id = newId();
+  await upsert({ id, start: t, end: null, manual: false, note: '', updatedAt: now() });
   await persistSettings({ alertSnoozeUntil: null });
   render();
+  toast(`Session démarrée à ${hhmmOf(t)}.`, { label: 'Annuler', run: undoTo(null, id) });
 }
 
 async function stopSession(): Promise<void> {
   const s = openSession();
   if (!s) return;
+  const before = { ...s };
   const end = floorToMinute(now());
+  let message: string;
   if (end <= s.start) {
-    await removeSession(s.id);
-    state.sessions = state.sessions.filter((x) => x.id !== s.id);
-    toast('Session de moins d’une minute : supprimée.');
+    await drop(s.id);
+    message = 'Session de moins d’une minute : supprimée.';
   } else {
     await upsert({ ...s, end, updatedAt: now() });
-    toast(`Session terminée : ${fmtDuration(Math.round((end - s.start) / MINUTE))}.`);
+    message = `Session terminée : ${fmtDuration(Math.round((end - s.start) / MINUTE))}.`;
   }
   await persistSettings({ alertSnoozeUntil: null });
   render();
+  toast(message, { label: 'Annuler', run: undoTo(before, s.id) });
 }
 
-function openEdit(id: string | null): void {
+function openEdit(id: string | null, closeOpenSession = false): void {
   if (id) {
     const s = state.sessions.find((x) => x.id === id);
     if (!s) return;
+    const end = s.end ?? floorToMinute(now());
     state.edit = {
       id,
-      date: dateKeyOf(s.start),
+      startDate: dateKeyOf(s.start),
       startTime: hhmmOf(s.start),
-      endTime: hhmmOf(s.end ?? floorToMinute(now())),
+      endDate: dateKeyOf(end),
+      endTime: hhmmOf(end),
       note: s.note,
       wasOpen: s.end === null,
+      keepOpen: s.end === null && !closeOpenSession,
     };
   } else {
     const today = dateKeyOf(now());
     const date = state.month === monthKeyOf(now()) ? today : `${state.month}-01`;
-    state.edit = { id: null, date, startTime: '08:00', endTime: '18:00', note: '', wasOpen: false };
+    const { defaultStart, defaultEnd } = state.settings;
+    state.edit = {
+      id: null,
+      startDate: date,
+      startTime: defaultStart,
+      endDate: defaultEnd <= defaultStart ? addDays(date, 1) : date,
+      endTime: defaultEnd,
+      note: '',
+      wasOpen: false,
+      keepOpen: false,
+    };
   }
   render();
 }
@@ -537,15 +703,16 @@ async function saveEdit(): Promise<void> {
   if (!e) return;
   const t = editTimes(e);
   if (!t) {
-    toast('Vérifie la date et les heures.');
+    toast(e.keepOpen ? 'Le début ne peut pas être dans le futur.' : 'La fin doit être après le début.');
     return;
   }
-  const overlap = state.sessions.find((o) => o.id !== e.id && o.start < t.end && (o.end ?? now()) > t.start);
+  const until = t.end ?? now();
+  const overlap = state.sessions.find((o) => o.id !== e.id && o.start < until && (o.end ?? now()) > t.start);
   if (overlap) {
     const when = `${fmtShortDate(dateKeyOf(overlap.start)).toLowerCase()} à ${hhmmOf(overlap.start)}`;
     if (!confirm(`Cette période chevauche la session du ${when}. Enregistrer quand même ?`)) return;
   }
-  const existing = e.id ? state.sessions.find((x) => x.id === e.id) : undefined;
+  const existing = e.id ? state.sessions.find((x) => x.id === e.id) ?? null : null;
   const session: Session = {
     id: existing?.id ?? newId(),
     start: t.start,
@@ -555,22 +722,22 @@ async function saveEdit(): Promise<void> {
     updatedAt: now(),
   };
   await upsert(session);
-  if (e.wasOpen) await persistSettings({ alertSnoozeUntil: null });
+  if (e.wasOpen && t.end !== null) await persistSettings({ alertSnoozeUntil: null });
   state.edit = null;
-  const m = monthKeyOf(session.start);
-  if (state.tab === 'historique') state.month = m;
-  toast('Enregistré.');
+  if (state.tab === 'historique') state.month = monthKeyOf(session.start);
   render();
+  toast('Enregistré.', { label: 'Annuler', run: undoTo(existing ? { ...existing } : null, session.id) });
 }
 
 async function deleteEdit(): Promise<void> {
   const e = state.edit;
-  if (!e?.id || !confirm('Supprimer cette entrée ?')) return;
-  await removeSession(e.id);
-  state.sessions = state.sessions.filter((x) => x.id !== e.id);
+  if (!e?.id) return;
+  const old = state.sessions.find((x) => x.id === e.id);
+  if (!old) return;
+  await drop(e.id);
   state.edit = null;
-  toast('Entrée supprimée.');
   render();
+  toast('Entrée supprimée.', { label: 'Annuler', run: undoTo({ ...old }, old.id) });
 }
 
 async function snoozeAlert(): Promise<void> {
@@ -582,19 +749,31 @@ async function snoozeAlert(): Promise<void> {
   render();
 }
 
-async function sendReleve(): Promise<void> {
+async function sendReleve(month: string): Promise<void> {
   // une session encore ouverte n'a pas sa place sur un relevé remis aux RH
-  const lines = monthLines(state.month, state.sessions.filter((s) => s.end !== null));
+  const lines = monthLines(month, closedSessions());
   if (!lines.length) {
-    toast('Aucune prestation terminée ce mois-ci.');
+    toast('Aucune prestation terminée ce mois-là.');
     return;
   }
-  const file = buildReleve(state.month, lines, state.settings, dateKeyOf(now()));
+  const file = buildReleve(month, lines, state.settings, dateKeyOf(now()));
   const outcome = await shareOrDownload(file);
   if (outcome !== 'cancelled') {
+    await persistSettings({ relevesSent: { ...state.settings.relevesSent, [month]: now() } });
     state.backupSheet = true;
     render();
   }
+}
+
+async function exportYear(): Promise<void> {
+  const year = Number(root.querySelector<HTMLSelectElement>('#export-year')?.value ?? dateKeyOf(now()).slice(0, 4));
+  const lines = linesFor(closedSessions(), isHoliday(), now()).filter((l) => l.date.startsWith(`${year}-`));
+  if (!lines.length) {
+    toast(`Aucune prestation terminée en ${year}.`);
+    return;
+  }
+  const csv = buildYearCsv(year, lines, state.settings);
+  await shareOrDownload(new File([csv], `Prestations_${year}.csv`, { type: 'text/csv' }));
 }
 
 async function exportBackup(): Promise<void> {
@@ -640,7 +819,6 @@ async function onClick(ev: Event): Promise<void> {
   switch (el.dataset.action) {
     case 'tab':
       state.tab = el.dataset.tab as Tab;
-      if (state.tab === 'historique' && !state.month) state.month = monthKeyOf(now());
       render();
       root.querySelector('.screen')?.scrollTo(0, 0);
       break;
@@ -648,7 +826,7 @@ async function onClick(ev: Event): Promise<void> {
     case 'stop': return stopSession();
     case 'fix-open': {
       const s = openSession();
-      if (s) openEdit(s.id);
+      if (s) openEdit(s.id, true);
       break;
     }
     case 'snooze': return snoozeAlert();
@@ -659,7 +837,9 @@ async function onClick(ev: Event): Promise<void> {
     case 'edit-cancel': state.edit = null; render(); break;
     case 'edit-save': return saveEdit();
     case 'edit-delete': return deleteEdit();
-    case 'releve': return sendReleve();
+    case 'releve': return sendReleve(el.dataset.month ?? state.month);
+    case 'dismiss-releve': await persistSettings({ releveReminderDismissed: el.dataset.month ?? null }); render(); break;
+    case 'export-year': return exportYear();
     case 'export': return exportBackup();
     case 'import': root.querySelector<HTMLInputElement>('#import-file')?.click(); break;
     case 'backup-later': state.backupSheet = false; render(); break;
@@ -673,8 +853,7 @@ async function onClick(ev: Event): Promise<void> {
       break;
     }
     case 'holiday-add': {
-      const input = root.querySelector<HTMLInputElement>('#holiday-new');
-      const v = input?.value;
+      const v = root.querySelector<HTMLInputElement>('#holiday-new')?.value;
       if (!v) { toast('Choisis une date.'); return; }
       if (!state.settings.extraHolidays.includes(v)) {
         await persistSettings({ extraHolidays: [...state.settings.extraHolidays, v].sort() });
@@ -697,6 +876,16 @@ async function onChange(ev: Event): Promise<void> {
     await importFile(input.files[0]);
     return;
   }
+  if (input.dataset.toggle === 'keepOpen' && state.edit) {
+    state.edit.keepOpen = input.checked;
+    if (!input.checked) {
+      const t = floorToMinute(now());
+      state.edit.endDate = dateKeyOf(t);
+      state.edit.endTime = hhmmOf(t);
+    }
+    render();
+    return;
+  }
   const field = input.dataset.field;
   if (!field) return;
   if (field === 'rateDay' || field === 'rateNight') {
@@ -707,6 +896,8 @@ async function onChange(ev: Event): Promise<void> {
       return;
     }
     await persistSettings(field === 'rateDay' ? { rateDayCents: cents } : { rateNightCents: cents });
+  } else if (field === 'defaultStart' || field === 'defaultEnd') {
+    if (TIME_RE.test(input.value)) await persistSettings({ [field]: input.value });
   } else if (field === 'name' || field === 'role' || field === 'service') {
     await persistSettings({ [field]: input.value.trim() });
   }
@@ -714,11 +905,21 @@ async function onChange(ev: Event): Promise<void> {
 
 function onInput(ev: Event): void {
   const input = ev.target as HTMLInputElement;
-  const key = input.dataset.edit as keyof EditState | undefined;
+  const key = input.dataset.edit as 'startDate' | 'startTime' | 'endDate' | 'endTime' | 'note' | undefined;
   if (!key || !state.edit) return;
-  (state.edit as unknown as Record<string, string>)[key] = input.value;
+  const e = state.edit;
+  // changer la date de début déplace la date de fin d'autant de jours
+  if (key === 'startDate' && input.value && e.startDate && !e.keepOpen) {
+    const shift = Math.round((Date.parse(input.value) - Date.parse(e.startDate)) / DAY);
+    if (shift && e.endDate) {
+      e.endDate = addDays(e.endDate, shift);
+      const endInput = root.querySelector<HTMLInputElement>('[data-edit="endDate"]');
+      if (endInput) endInput.value = e.endDate;
+    }
+  }
+  e[key] = input.value;
   const preview = root.querySelector('#edit-preview');
-  if (preview) preview.innerHTML = previewHtml(state.edit);
+  if (preview) preview.innerHTML = previewHtml(e);
 }
 
 // ---------- Démarrage ----------

@@ -15,5 +15,8 @@ export const icons = {
   info: svg('<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>', 18),
   trash: svg('<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>', 18),
   close: svg('<path d="M6 6l12 12M18 6 6 18"/>', 18),
+  pencil: svg('<path d="M4 20h4L19 9l-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/>', 18),
+  check: svg('<path d="m5 12 5 5 9-10"/>', 16, 2.4),
+  alertSmall: svg('<path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17h.01"/>', 18),
   download: svg('<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>', 18),
 };

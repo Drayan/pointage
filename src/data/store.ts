@@ -18,7 +18,11 @@ export interface Settings {
   rateDayCents: number;
   rateNightCents: number;
   alertHours: number;
+  defaultStart: string; // 'HH:MM', pré-remplissage d'une nouvelle entrée
+  defaultEnd: string;
   extraHolidays: string[]; // 'AAAA-MM-JJ'
+  relevesSent: Record<string, number>; // 'AAAA-MM' -> instant du dernier envoi
+  releveReminderDismissed: string | null; // mois dont le rappel d'envoi a été écarté
   lastBackup: number | null;
   alertSnoozeUntil: number | null; // l'alerte de session ouverte est masquée jusqu'à cet instant
   backupReminderDismissedAt: number | null;
@@ -31,7 +35,11 @@ export const DEFAULT_SETTINGS: Settings = {
   rateDayCents: 2600,
   rateNightCents: 3400,
   alertHours: 11,
+  defaultStart: '08:00',
+  defaultEnd: '18:00',
   extraHolidays: [],
+  relevesSent: {},
+  releveReminderDismissed: null,
   lastBackup: null,
   alertSnoozeUntil: null,
   backupReminderDismissedAt: null,
