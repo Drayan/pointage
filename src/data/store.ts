@@ -23,6 +23,7 @@ export interface Settings {
   extraHolidays: string[]; // 'AAAA-MM-JJ'
   relevesSent: Record<string, number>; // 'AAAA-MM' -> instant du dernier envoi
   releveReminderDismissed: string | null; // mois dont le rappel d'envoi a été écarté
+  installHintDismissed: boolean;
   lastBackup: number | null;
   alertSnoozeUntil: number | null; // l'alerte de session ouverte est masquée jusqu'à cet instant
   backupReminderDismissedAt: number | null;
@@ -40,6 +41,7 @@ export const DEFAULT_SETTINGS: Settings = {
   extraHolidays: [],
   relevesSent: {},
   releveReminderDismissed: null,
+  installHintDismissed: false,
   lastBackup: null,
   alertSnoozeUntil: null,
   backupReminderDismissedAt: null,

@@ -21,16 +21,27 @@ Web app installable sur iPhone (et Android) pour compter les heures de travail s
 3. Sur GitHub : **Settings → Pages → Build and deployment → Source : GitHub Actions**.
 4. L'onglet **Actions** lance les tests, construit l'app et la publie. Au bout d'une minute ou deux, elle est disponible à `https://<ton-pseudo>.github.io/pointage/`.
 
-Chaque `git push` sur `main` republie l'app ; les téléphones récupèrent la nouvelle version en arrière-plan et proposent « Mettre à jour » sur l'écran Pointer.
+Chaque `git push` sur `main` republie l'app. Les téléphones vérifient s'il existe une nouvelle version à chaque ouverture ou retour au premier plan, la téléchargent en arrière-plan et proposent « Mettre à jour » sur l'écran Pointer.
 
 > L'adresse est définitive : les données d'un téléphone sont liées à elle. En cas de changement d'adresse, passer par Exporter / Importer.
 
-## Installation sur iPhone
+## Installation sur le téléphone
+
+**iPhone**
 
 1. Ouvrir l'adresse dans **Safari**.
 2. Partager → **Sur l'écran d'accueil**.
-3. Toujours utiliser l'icône ensuite : Safari et l'app installée ne partagent pas leurs données.
-4. Dans Réglages, renseigner le nom (il apparaît sur le relevé).
+3. Toujours utiliser l'icône ensuite : sur iPhone, Safari et l'app installée ne partagent pas leurs données.
+
+**Android**
+
+1. Ouvrir l'adresse dans **Chrome** (Samsung Internet fonctionne aussi).
+2. Toucher **Installer l'app** dans le bandeau de l'écran Pointer, ou menu ⋮ → **Installer l'application**.
+3. L'app apparaît dans le tiroir d'applications. Chrome et l'app installée partagent les mêmes données.
+
+Dans les deux cas, renseigner ensuite le nom dans Réglages (il apparaît sur le relevé).
+
+Sur Android, le relevé se partage vers Gmail, Outlook ou toute autre app de mail ; le Raccourci ci-dessous est propre à l'iPhone. La sauvegarde JSON est enregistrée dans Téléchargements, d'où elle peut être réimportée.
 
 ## Raccourci iOS facultatif « Relevé → CSPO »
 

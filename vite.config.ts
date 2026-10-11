@@ -23,6 +23,7 @@ export default defineConfig({
         short_name: 'Pointage',
         description: 'Comptage des heures de travail jour/nuit, données gardées sur le téléphone.',
         lang: 'fr-BE',
+        id: base,
         start_url: base,
         scope: base,
         display: 'standalone',

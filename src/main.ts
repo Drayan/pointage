@@ -22,4 +22,16 @@ const updateSW = registerSW({
   onNeedRefresh() {
     notifyUpdateReady(() => void updateSW(true));
   },
+  // Les téléphones laissent l'app en arrière-plan pendant des jours : on vérifie
+  // s'il existe une nouvelle version à chaque retour au premier plan, et toutes les heures.
+  onRegisteredSW(_url, registration) {
+    if (!registration) return;
+    const check = () => {
+      if (navigator.onLine) registration.update().catch(() => undefined);
+    };
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') check();
+    });
+    setInterval(check, 60 * 60 * 1000);
+  },
 });

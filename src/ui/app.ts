@@ -43,6 +43,7 @@ interface State {
 const DAY = 24 * 60 * MINUTE;
 const BACKUP_REMINDER_DAYS = 35;
 const UNDO_MS = 6000;
+const DOWNLOADED = 'Fichier enregistré dans Téléchargements.';
 
 let state: State;
 let root: HTMLElement;
@@ -74,6 +75,73 @@ function monthLines(monthKey: string, sessions: readonly Session[] = state.sessi
 
 function isStandalone(): boolean {
   return window.matchMedia('(display-mode: standalone)').matches || (navigator as { standalone?: boolean }).standalone === true;
+}
+
+// ---------- iPhone / Android ----------
+
+type Platform = 'ios' | 'android' | 'other';
+
+function platform(): Platform {
+  const ua = navigator.userAgent;
+  // un iPad récent se présente comme un Mac : on le reconnaît à l'écran tactile
+  if (/iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return 'ios';
+  if (/Android/.test(ua)) return 'android';
+  return 'other';
+}
+
+/** Événement propre à Chrome (Android, ordinateur) : permet d'afficher notre propre bouton « Installer ». */
+interface BeforeInstallPromptEvent extends Event {
+  prompt(): Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
+}
+
+let installPrompt: BeforeInstallPromptEvent | null = null;
+
+function listenForInstall(): void {
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    installPrompt = e as BeforeInstallPromptEvent;
+    if (state) render();
+  });
+  window.addEventListener('appinstalled', () => {
+    installPrompt = null;
+    if (state) {
+      render();
+      toast("App installée : ouvre-la désormais depuis son icône.");
+    }
+  });
+}
+
+async function promptInstall(): Promise<void> {
+  const ev = installPrompt;
+  if (!ev) return;
+  installPrompt = null;
+  await ev.prompt();
+  await ev.userChoice.catch(() => undefined);
+  render();
+}
+
+/** Bouton « Installer l'app », quand le navigateur le permet (Chrome sur Android ou ordinateur). */
+function installButton(): string {
+  return installPrompt
+    ? `<button type="button" class="btn btn-small" data-action="install">${icons.download}<span>Installer l'app</span></button>`
+    : '';
+}
+
+/** Explication de l'installation, selon le téléphone. */
+function installHelp(detailed: boolean): string {
+  switch (platform()) {
+    case 'ios':
+      return `<p>Dans <strong>Safari</strong> : Partager → « Sur l'écran d'accueil ».</p>
+        ${detailed ? "<p>Utilise ensuite toujours l'icône : Safari et l'app installée ne partagent pas leurs données.</p>" : ''}`;
+    case 'android':
+      return installPrompt
+        ? "<p>Elle s'ouvrira ensuite comme une app, même hors connexion.</p>"
+        : `<p>Dans <strong>Chrome</strong> : menu ⋮ → « Installer l'application » (ou « Ajouter à l'écran d'accueil »).</p>
+          ${detailed ? "<p>L'app installée et Chrome partagent les mêmes données.</p>" : ''}`;
+    default:
+      return "<p>Ouvre cette adresse sur ton téléphone (Safari sur iPhone, Chrome sur Android) pour l'installer.</p>";
+  }
 }
 
 /** Message bref en bas d'écran, avec éventuellement un bouton (Annuler). */
@@ -224,6 +292,15 @@ function renderPointer(): string {
       </section>`
     : '';
 
+  const install =
+    !isStandalone() && !state.settings.installHintDismissed
+      ? `<section class="banner banner-info install-banner">
+          <span class="strong">Installe Pointage sur ton écran d'accueil</span>
+          <div class="install-help">${installHelp(false)}</div>
+          <div class="row-8">${installButton()}<button type="button" class="btn btn-small btn-ghost" data-action="dismiss-install">Plus tard</button></div>
+        </section>`
+      : '';
+
   const update = state.updateReady
     ? `<section class="banner banner-info"><span>Une nouvelle version de l'app est prête.</span>
         <button type="button" class="btn btn-small" data-action="apply-update">Mettre à jour</button></section>`
@@ -258,6 +335,7 @@ function renderPointer(): string {
       </div>
       <span class="badge badge-${ctx.kind}">${ctx.label}</span>
     </header>
+    ${install}
     ${update}
     ${alert}
     ${sessionCard}
@@ -465,15 +543,11 @@ function renderReglages(): string {
         <button type="button" class="btn btn-primary" data-action="export">Exporter</button>
         <button type="button" class="btn btn-outline" data-action="import">Importer</button>
       </div>
-      <input type="file" id="import-file" accept="application/json,.json" hidden>
+      <input type="file" id="import-file" hidden>
       <p class="hint">${st.lastBackup ? `Dernière sauvegarde : ${fmtLongDate(dateKeyOf(st.lastBackup)).toLowerCase()}.` : 'Aucune sauvegarde pour l’instant.'} Les données ne quittent jamais ce téléphone autrement.</p>
     </section>
 
-    ${
-      isStandalone()
-        ? ''
-        : `<section class="section"><h2>Installation</h2><p class="hint">Pour l'installer : dans Safari, Partager → « Sur l'écran d'accueil ». Utilise ensuite toujours l'icône : Safari et l'app installée ne partagent pas leurs données.</p></section>`
-    }
+    ${isStandalone() ? '' : `<section class="section"><h2>Installation</h2><div class="hint install-help">${installHelp(true)}${installButton()}</div></section>`}
     <p class="hint center">Pointage 000 · v${__APP_VERSION__}</p>
   </main>`;
 }
@@ -606,6 +680,47 @@ function render(): void {
   if (next && scroll) next.scrollTop = scroll;
   const sel = root.querySelector<HTMLSelectElement>('#export-year');
   if (sel && yearSel) sel.value = yearSel;
+  syncHistory();
+}
+
+// ---------- Bouton retour (Android) ----------
+// Chaque niveau ouvert (un onglet autre que Pointer, puis une fenêtre de correction ou de sauvegarde)
+// correspond à une entrée d'historique. Le bouton retour referme ainsi le niveau le plus haut
+// au lieu de quitter l'app. Sur iPhone, sans bouton retour, ce mécanisme reste invisible.
+
+let histDepth = 0;
+let ignorePops = 0;
+
+function wantedDepth(): number {
+  return (state.tab !== 'pointer' ? 1 : 0) + (state.edit || state.backupSheet ? 1 : 0);
+}
+
+function syncHistory(): void {
+  const want = wantedDepth();
+  while (histDepth < want) {
+    histDepth++;
+    history.pushState({ pointageDepth: histDepth }, '');
+  }
+  if (histDepth > want) {
+    ignorePops++;
+    history.go(want - histDepth);
+    histDepth = want;
+  }
+}
+
+function onPopState(ev: PopStateEvent): void {
+  if (ignorePops > 0) {
+    ignorePops--;
+    return;
+  }
+  histDepth = (ev.state as { pointageDepth?: number } | null)?.pointageDepth ?? 0;
+  if (state.edit || state.backupSheet) {
+    state.edit = null;
+    state.backupSheet = false;
+  } else if (state.tab !== 'pointer') {
+    state.tab = 'pointer';
+  }
+  render();
 }
 
 // ---------- Actions ----------
@@ -762,6 +877,7 @@ async function sendReleve(month: string): Promise<void> {
     await persistSettings({ relevesSent: { ...state.settings.relevesSent, [month]: now() } });
     state.backupSheet = true;
     render();
+    if (outcome === 'downloaded') toast(DOWNLOADED);
   }
 }
 
@@ -773,7 +889,8 @@ async function exportYear(): Promise<void> {
     return;
   }
   const csv = buildYearCsv(year, lines, state.settings);
-  await shareOrDownload(new File([csv], `Prestations_${year}.csv`, { type: 'text/csv' }));
+  const outcome = await shareOrDownload(new File([csv], `Prestations_${year}.csv`, { type: 'text/csv' }));
+  if (outcome === 'downloaded') toast(DOWNLOADED);
 }
 
 async function exportBackup(): Promise<void> {
@@ -783,7 +900,7 @@ async function exportBackup(): Promise<void> {
   state.backupSheet = false;
   if (outcome !== 'cancelled') {
     await persistSettings({ lastBackup: now(), backupReminderDismissedAt: null });
-    toast('Sauvegarde exportée.');
+    toast(outcome === 'downloaded' ? DOWNLOADED : 'Sauvegarde exportée.');
   }
   render();
 }
@@ -867,6 +984,8 @@ async function onClick(ev: Event): Promise<void> {
       render();
       break;
     case 'apply-update': state.updateReady?.(); break;
+    case 'install': return promptInstall();
+    case 'dismiss-install': await persistSettings({ installHintDismissed: true }); render(); break;
   }
 }
 
@@ -926,6 +1045,9 @@ function onInput(ev: Event): void {
 
 export async function startApp(el: HTMLElement): Promise<void> {
   root = el;
+  listenForInstall(); // avant toute attente : Chrome peut émettre l'événement très tôt
+  histDepth = (history.state as { pointageDepth?: number } | null)?.pointageDepth ?? 0;
+  window.addEventListener('popstate', onPopState);
   const [sessions, settings] = await Promise.all([loadSessions(), loadSettings()]);
   state = {
     sessions,
