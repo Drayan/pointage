@@ -66,15 +66,16 @@ describe('export CSV annuel', () => {
       s('1', ['2026-09-30', '07:30'], ['2026-09-30', '17:45']),
       { ...s('2', ['2026-10-07', '07:50'], ['2026-10-08', '02:40']), manual: true, note: 'garde; urgences' },
     ];
-    const csv = buildYearCsv(2026, linesFor(sessions, isHoliday, 0), { rateDayCents: 2600, rateNightCents: 3400 });
+    const csv = buildYearCsv(2026, linesFor(sessions, isHoliday, 0), { rateDayCents: 2600, rateNightCents: 3400, astreinteCents: 5000 }, ['2026-10-15']);
     const rows = csv.replace('﻿', '').trim().split('\r\n');
     expect(csv.startsWith('﻿')).toBe(true);
     expect(rows[0]).toBe('Date;Jour;Début;Fin;Heures jour;Heures nuit;Total heures;Montant jour (€);Montant nuit (€);Montant total (€);Saisie manuelle;Note');
     expect(rows[1]).toBe('30/09/2026;Mer;07:30;17:45;9,75;0,50;10,25;253,50;17,00;270,50;;');
     expect(rows[2]).toBe('07/10/2026;Mer;07:50;24:00;10,00;6,17;16,17;260,00;209,67;469,67;oui;"garde; urgences"');
     expect(rows[3]).toBe('08/10/2026;Jeu;00:00;02:40;0,00;2,67;2,67;0,00;90,67;90,67;oui;"garde; urgences"');
-    expect(rows).toContain('Septembre 2026;9,75;0,50;10,25;270,50');
-    expect(rows).toContain('Octobre 2026;10,00;8,83;18,83;560,34');
-    expect(rows).toContain('Total 2026;19,75;9,33;29,08;830,84');
+    expect(rows).toContain('Septembre 2026;9,75;0,50;10,25;0;270,50');
+    expect(rows[4]).toBe('15/10/2026;Jeu;;;;;;;;50,00;;Astreinte');
+    expect(rows).toContain('Octobre 2026;10,00;8,83;18,83;1;610,34');
+    expect(rows).toContain('Total 2026;19,75;9,33;29,08;1;880,84');
   });
 });

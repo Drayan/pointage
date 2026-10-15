@@ -304,3 +304,19 @@ select.input-boxed { appearance: none; -webkit-appearance: none; border: none; p
 .install-help p { margin: 0; line-height: 1.45; }
 .install-banner .row-8 { margin-top: -4px; }
 .install-banner .row-8 > .btn-ghost:first-child { margin-left: -14px; }
+
+/* ---------- Ajouts v1.3 : pause, astreinte, relevé ---------- */
+.session-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); gap: 10px; }
+.session-actions .btn-outline { min-height: 64px; border-radius: 18px; font-size: 18px; }
+.dot-pause { background: var(--day-swatch); }
+.chrono-pause { color: var(--muted); }
+.pause-note { margin: -6px 0 0; }
+.astreinte-row { padding: 12px 16px; }
+.astreinte-row svg, .line-astreinte svg, .status-line svg { color: var(--night-swatch); flex-shrink: 0; }
+.line-astreinte .line-head { gap: 6px; }
+.segmented { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); background: var(--field); border-radius: 12px; padding: 3px; gap: 3px; }
+.segmented button { min-height: 40px; border: none; border-radius: 10px; background: transparent; font-weight: 600; font-size: 15px; color: var(--muted); }
+.segmented .seg-on { background: var(--surface); color: var(--ink); box-shadow: var(--shadow); }
+.field-col { flex-direction: column; align-items: stretch; gap: 6px; padding: 10px 0; }
+.input-area { font: inherit; font-size: 15px; border: none; background: var(--field); border-radius: 10px; padding: 8px 10px; resize: vertical; color: var(--ink); }
+.sheet .btn-ghost { align-self: center; }

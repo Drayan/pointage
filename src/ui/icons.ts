@@ -18,5 +18,8 @@ export const icons = {
   pencil: svg('<path d="M4 20h4L19 9l-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/>', 18),
   check: svg('<path d="m5 12 5 5 9-10"/>', 16, 2.4),
   alertSmall: svg('<path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17h.01"/>', 18),
+  moon: svg('<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/>', 20),
+  pause: svg('<path d="M9 5v14M15 5v14"/>', 22, 2.4),
+  play: svg('<path d="M7 5v14l11-7z"/>', 22, 2.2),
   download: svg('<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>', 18),
 };

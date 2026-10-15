@@ -1,131 +1,189 @@
-// Relevé mensuel des prestations en PDF A4, généré sur le téléphone. Aucun montant n'y figure.
+// État d'honoraires mensuel en PDF A4, au format du modèle CSPO, généré sur le téléphone.
+// Heures en décimales ; aucun montant n'y figure.
 
 import { jsPDF } from 'jspdf';
-import { autoTable } from 'jspdf-autotable';
-import type { DayLine } from './core/split';
-import { sumLines } from './core/split';
-import { fmtDuration, fmtMonth, fmtNumericDate, fmtShortDate } from './core/format';
+import { fmtMonth, fmtNumericDate } from './core/format';
+import { fmtDecimal, type ReleveData } from './core/releve';
 import type { Settings } from './data/store';
 import { safeFilePart } from './share';
 
-const INK: [number, number, number] = [23, 32, 29];
-const MUTED: [number, number, number] = [80, 90, 86];
-const RULE: [number, number, number] = [205, 210, 205];
+type RGB = [number, number, number];
+const INK: RGB = [0, 0, 0];
+const MUTED: RGB = [70, 70, 70];
+const SHADE: RGB = [253, 233, 217]; // week-ends et fériés (teinte du modèle)
+const PLUS: RGB = [217, 217, 217]; // colonne « + »
 
-export function buildReleve(monthKey: string, lines: readonly DayLine[], settings: Settings, todayKey: string): File {
+export const MAIL_CSPO = 'DirMed_Prestations_indep@cspo.be';
+
+// Largeurs des colonnes du modèle (A à G), mises à l'échelle de la page
+const MODEL_WIDTHS = [6.86, 21.43, 21.43, 12.14, 2.29, 12.14, 15.71];
+const LEFT = 10;
+const RIGHT = 200;
+const BOTTOM = 287;
+const COLS = (() => {
+  const total = MODEL_WIDTHS.reduce((a, b) => a + b, 0);
+  const xs: number[] = [LEFT];
+  for (const w of MODEL_WIDTHS) xs.push(xs.at(-1)! + (w * (RIGHT - LEFT)) / total);
+  return xs; // 8 bornes pour 7 colonnes
+})();
+const colX = (i: number) => COLS[i];
+const colW = (i: number) => COLS[i + 1] - COLS[i];
+const colMid = (i: number) => COLS[i] + colW(i) / 2;
+
+const THIN = 0.2;
+const MEDIUM = 0.5;
+
+export function releveFileName(monthKey: string, settings: Settings, ext: 'pdf' | 'xlsx'): string {
+  const who = safeFilePart(settings.name);
+  return `Etat_honoraires_${monthKey}${who ? `_${who}` : ''}.${ext}`;
+}
+
+export function buildRelevePdf(data: ReleveData, settings: Settings, todayKey: string): File {
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
-  const left = 18;
-  const right = 210 - 18;
-
-  // En-tête
   doc.setTextColor(...INK);
+  doc.setDrawColor(...INK);
+
+  const text = (s: string, x: number, y: number, size: number, style: 'normal' | 'bold' | 'italic' = 'normal', align: 'left' | 'center' | 'right' = 'left') => {
+    doc.setFont('helvetica', style);
+    doc.setFontSize(size);
+    doc.text(s, x, y, { align, baseline: 'middle' });
+  };
+
+  // ----- En-tête -----
+  const lines = settings.institution.split('\n').map((l) => l.trim()).filter(Boolean);
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(18);
-  doc.text('Relevé des prestations', left, 24);
-  doc.setFont('helvetica', 'normal');
   doc.setFontSize(11);
-  doc.setTextColor(...MUTED);
-  doc.text(fmtMonth(monthKey), left, 31);
-  doc.setFontSize(9);
-  doc.text(`État au ${fmtNumericDate(todayKey)}`, right, 31, { align: 'right' });
-  doc.setDrawColor(...INK);
-  doc.setLineWidth(0.5);
-  doc.line(left, 35, right, 35);
+  const instW = Math.max(...lines.map((l) => doc.getTextWidth(l)), 0);
+  lines.forEach((l, i) => text(l, i === 0 ? LEFT : LEFT + instW / 2, 13 + i * 5, 11, 'bold', i === 0 ? 'left' : 'center'));
+  text("ETAT D'HONORAIRES /h", (LEFT + RIGHT) / 2, 26, 14, 'normal', 'center');
+  text('NOM DU MEDECIN :', colX(2) - 2, 35, 9.5, 'normal', 'right');
+  text(settings.name || '', colX(2) + 1, 35, 11, 'bold');
+  text('MOIS :', colX(2) - 2, 43, 11, 'bold', 'right');
+  text(fmtMonth(data.monthKey), colX(2) + 1, 43, 11, 'bold');
+  text(`État au ${fmtNumericDate(todayKey)}`, RIGHT, 43, 8, 'normal', 'right');
 
-  // Identité
-  const col = (right - left) / 3;
-  const info: [string, string][] = [
-    ['Médecin', settings.name || '-'],
-    ['Fonction', settings.role || '-'],
-    ['Service', settings.service || '-'],
-  ];
-  info.forEach(([label, value], i) => {
-    const x = left + i * col;
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8.5);
-    doc.setTextColor(...MUTED);
-    doc.text(label, x, 43);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(10.5);
-    doc.setTextColor(...INK);
-    doc.text(doc.splitTextToSize(value, col - 4)[0] ?? '', x, 48.5);
+  // ----- Tableau -----
+  const headTop = 50;
+  const headH = 15;
+  const totalH = 9;
+  const footerH = 36;
+  const rows = data.rows;
+  const rowH = Math.min(7.5, Math.max(4.8, (BOTTOM - footerH - totalH - headTop - headH) / rows.length));
+
+  const drawHeader = (top: number) => {
+    doc.setFillColor(...PLUS);
+    doc.rect(colX(4), top, colW(4), headH, 'F');
+    const heads: string[][] = [
+      ['Date'], ['Horaire matin'], ['Horaire après-midi'], ['TOTAL', 'Heures de', 'jour'], ['+'], ['TOTAL', 'Heures de', 'nuit'], ['Astreinte', '(à cocher)'],
+    ];
+    heads.forEach((h, i) => {
+      const startY = top + headH / 2 - ((h.length - 1) * 3.6) / 2;
+      h.forEach((t, k) => text(t, colMid(i), startY + k * 3.6, i === 6 && k === 1 ? 8.5 : 9.5, i === 6 && k === 1 ? 'italic' : 'bold', 'center'));
+    });
+    doc.setLineWidth(MEDIUM);
+    doc.rect(LEFT, top, RIGHT - LEFT, headH);
+    for (let i = 1; i < 7; i++) {
+      doc.setLineWidth(i === 4 || i === 5 || i === 6 ? MEDIUM : THIN);
+      doc.line(colX(i), top, colX(i), top + headH);
+    }
+  };
+
+  let y = headTop;
+  drawHeader(y);
+  y += headH;
+  let pageTop = y;
+
+  const closeTableFrame = (from: number, to: number) => {
+    doc.setLineWidth(MEDIUM);
+    doc.line(LEFT, from, LEFT, to);
+    doc.line(RIGHT, from, RIGHT, to);
+    doc.line(colX(6), from, colX(6), to);
+  };
+
+  rows.forEach((r) => {
+    if (y + rowH > BOTTOM - totalH) {
+      closeTableFrame(pageTop, y);
+      doc.addPage();
+      y = 15;
+      drawHeader(y);
+      y += headH;
+      pageTop = y;
+    }
+    if (r.shaded) {
+      doc.setFillColor(...SHADE);
+      doc.rect(LEFT, y, RIGHT - LEFT, rowH, 'F');
+    }
+    doc.setFillColor(...PLUS);
+    doc.rect(colX(4), y, colW(4), rowH, 'F');
+    // trait du haut redessiné après le fond : sinon un jour grisé efface la ligne qui le sépare du précédent
+    doc.setLineWidth(y === pageTop ? MEDIUM : THIN);
+    doc.line(LEFT, y, RIGHT, y);
+    const mid = y + rowH / 2;
+    const size = rowH < 5.5 ? 8.5 : 9.5;
+    text(`${r.day}${r.manual ? '*' : ''}`, colMid(0), mid, size, 'bold', 'center');
+    if (r.morning) text(r.morning.label, colMid(1), mid, size, 'normal', 'center');
+    if (r.afternoon) text(r.afternoon.label, colMid(2), mid, size, 'normal', 'center');
+    if (r.first && (r.dayMin || r.nightMin || r.morning || r.afternoon)) {
+      text(`T = ${fmtDecimal(r.dayMin)} h`, colMid(3), mid, size, 'normal', 'center');
+      text(`T = ${fmtDecimal(r.nightMin)} h`, colMid(5), mid, size, 'normal', 'center');
+    }
+    if (r.astreinte) text('X', colMid(6), mid, 11, 'bold', 'center');
+    doc.setLineWidth(THIN);
+    doc.line(LEFT, y + rowH, RIGHT, y + rowH);
+    for (let i = 1; i < 7; i++) doc.line(colX(i), y, colX(i), y + rowH);
+    y += rowH;
   });
+  closeTableFrame(pageTop, y);
+  doc.setLineWidth(MEDIUM);
+  doc.line(LEFT, y, RIGHT, y);
 
-  // Tableau
-  const sorted = [...lines].sort((a, b) => a.date.localeCompare(b.date) || a.start - b.start);
-  const totals = sumLines(sorted);
-  const body = sorted.map((l) => [
-    fmtShortDate(l.date) + (l.manual ? ' *' : ''),
-    l.startLabel,
-    l.open ? 'en cours' : l.endLabel,
-    l.dayMin ? fmtDuration(l.dayMin) : '-',
-    l.nightMin ? fmtDuration(l.nightMin) : '-',
-    fmtDuration(l.dayMin + l.nightMin),
-  ]);
-
-  autoTable(doc, {
-    startY: 56,
-    margin: { left, right: 210 - right, bottom: 20 },
-    theme: 'plain',
-    head: [['Date', 'Début', 'Fin', 'Heures jour', 'Heures nuit', 'Total']],
-    body: body.length ? body : [['Aucune prestation', '', '', '', '', '']],
-    foot: [['Total du mois', '', '', fmtDuration(totals.dayMin), fmtDuration(totals.nightMin), fmtDuration(totals.dayMin + totals.nightMin)]],
-    showFoot: 'lastPage',
-    styles: { font: 'helvetica', fontSize: 9.5, textColor: INK, cellPadding: { top: 2.2, bottom: 2.2, left: 1.5, right: 1.5 } },
-    headStyles: { fontStyle: 'bold', lineWidth: { bottom: 0.4 }, lineColor: INK },
-    bodyStyles: { lineWidth: { bottom: 0.15 }, lineColor: RULE },
-    footStyles: { fontStyle: 'bold', fontSize: 10, lineWidth: { top: 0.4 }, lineColor: INK },
-    columnStyles: {
-      0: { halign: 'left' },
-      1: { halign: 'right' },
-      2: { halign: 'right' },
-      3: { halign: 'right' },
-      4: { halign: 'right' },
-      5: { halign: 'right', fontStyle: 'bold' },
-    },
-    didParseCell: (data) => {
-      if ((data.section === 'head' || data.section === 'foot') && data.column.index > 0) data.cell.styles.halign = 'right';
-    },
-  });
-
-  let y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
-
-  // Notes de bas de tableau
-  const notes = [
-    ...(sorted.some((l) => l.manual) ? ['* Entrée corrigée ou saisie manuellement.'] : []),
-    'Heures nuit : de 18h à 8h, ainsi que les week-ends et jours fériés légaux.',
-    'Une prestation qui passe minuit est répartie sur deux lignes.',
-  ];
-  if (y + notes.length * 4.5 + 45 > 297 - 18) {
-    doc.addPage();
-    y = 24;
+  // ----- Ligne TOTAL -----
+  doc.setLineWidth(THIN);
+  doc.rect(colX(2), y, colX(4) - colX(2), totalH);
+  doc.rect(colX(5), y, colW(5), totalH);
+  doc.setLineWidth(MEDIUM);
+  doc.line(colX(2), y + totalH, colX(4), y + totalH);
+  doc.line(colX(5), y + totalH, colX(6), y + totalH);
+  text('TOTAL', colMid(2), y + totalH / 2, 11, 'bold', 'center');
+  text(`${fmtDecimal(data.dayMin)} h`, colMid(3), y + totalH / 2, 10, 'bold', 'center');
+  text(`${fmtDecimal(data.nightMin)} h`, colMid(5), y + totalH / 2, 10, 'bold', 'center');
+  if (data.astreintes) {
+    doc.setLineWidth(THIN);
+    doc.rect(colX(6), y, colW(6), totalH);
+    text(String(data.astreintes), colMid(6), y + totalH / 2, 10, 'bold', 'center');
   }
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8.5);
+  y += totalH + 6;
+
+  // ----- Pied : mentions à gauche, cachet à droite -----
+  if (y + 29 > BOTTOM) {
+    doc.addPage();
+    y = 20;
+  }
+  const notes: string[] = [];
+  if (data.rows.some((r) => r.manual)) notes.push('* Entrée corrigée ou saisie manuellement.');
+  notes.push('Heures en décimales (9,25 h = 9 h 15).');
+  notes.push('Heures de nuit : de 18h à 8h, week-ends et jours fériés.');
   doc.setTextColor(...MUTED);
-  notes.forEach((n, i) => doc.text(n, left, y + i * 4.5));
+  notes.forEach((n, i) => text(n, LEFT, y + i * 4, 8));
+  doc.setTextColor(...INK);
+  const ny = y + notes.length * 4 + 3;
+  text('Copie au Médecin encadrant', colX(1), ny, 9.5, 'italic');
+  text(`A envoyer par mail à ${MAIL_CSPO}`, colX(1), ny + 5, 9.5, 'italic');
+  text('début du mois qui suit les prestations', colX(1), ny + 9.5, 9.5, 'italic');
 
-  // Cadre cachet et signature
-  const boxW = 72;
-  const boxH = 36;
-  const boxY = Math.max(y + notes.length * 4.5 + 6, 297 - 18 - boxH - 6);
-  doc.text('Cachet et signature', right - boxW, boxY - 2);
-  doc.setDrawColor(...INK);
+  const boxW = RIGHT - colX(5) + 4;
+  const boxX = RIGHT - boxW;
+  text('Cachet et signature', boxX, y, 8.5, 'normal');
   doc.setLineWidth(0.3);
-  doc.roundedRect(right - boxW, boxY, boxW, boxH, 1.5, 1.5);
+  doc.roundedRect(boxX, y + 2.5, boxW, 26, 1.2, 1.2);
 
-  // Numéros de page
   const pages = doc.getNumberOfPages();
   if (pages > 1) {
     for (let p = 1; p <= pages; p++) {
       doc.setPage(p);
-      doc.setFontSize(8);
-      doc.setTextColor(...MUTED);
-      doc.text(`${p} / ${pages}`, right, 297 - 10, { align: 'right' });
+      text(`${p} / ${pages}`, RIGHT, 292, 8, 'normal', 'right');
     }
   }
 
-  const who = safeFilePart(settings.name);
-  const fileName = `Releve_${monthKey}${who ? `_${who}` : ''}.pdf`;
-  return new File([doc.output('blob')], fileName, { type: 'application/pdf' });
+  return new File([doc.output('blob')], releveFileName(data.monthKey, settings, 'pdf'), { type: 'application/pdf' });
 }

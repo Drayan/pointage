@@ -13,13 +13,15 @@ import {
   importBackup, loadSessions, loadSettings, makeBackup, newId, removeSession, requestPersistence, saveSession,
   saveSettings, type Session, type Settings,
 } from '../data/store';
-import { buildReleve } from '../pdf';
+import { buildReleveData } from '../core/releve';
+import { buildRelevePdf } from '../pdf';
 import { shareOrDownload } from '../share';
 import { icons } from './icons';
 
 type Tab = 'pointer' | 'historique' | 'reglages';
 
 interface EditState {
+  kind: 'session' | 'astreinte'; // une nouvelle entrée peut être une prestation ou un soir d'astreinte
   id: string | null; // null = nouvelle entrée
   startDate: string;
   startTime: string;
@@ -37,6 +39,7 @@ interface State {
   month: string;
   edit: EditState | null;
   backupSheet: boolean;
+  releveSheet: string | null; // mois du relevé dont on choisit le format
   updateReady: (() => void) | null;
 }
 
@@ -44,6 +47,7 @@ const DAY = 24 * 60 * MINUTE;
 const BACKUP_REMINDER_DAYS = 35;
 const UNDO_MS = 6000;
 const DOWNLOADED = 'Fichier enregistré dans Téléchargements.';
+const PAUSE_MAX_MS = 6 * 3_600_000; // une pause plus longue n'est plus proposée à la reprise
 
 let state: State;
 let root: HTMLElement;
@@ -67,6 +71,17 @@ function isHoliday(): HolidayChecker {
 }
 
 const openSession = () => state.sessions.find((s) => s.end === null) ?? null;
+
+/** Pause de midi en cours : seulement le jour même, sans session ouverte, depuis moins de 6 h. */
+function activePause(): number | null {
+  const p = state.settings.pauseStartedAt;
+  if (!p || openSession()) return null;
+  if (dateKeyOf(p) !== dateKeyOf(now()) || now() - p > PAUSE_MAX_MS) return null;
+  return p;
+}
+
+const hasAstreinte = (date: string) => state.settings.astreintes.includes(date);
+const monthAstreintes = (monthKey: string) => state.settings.astreintes.filter((d) => d.startsWith(monthKey));
 const closedSessions = () => state.sessions.filter((s) => s.end !== null);
 
 function monthLines(monthKey: string, sessions: readonly Session[] = state.sessions): DayLine[] {
@@ -239,7 +254,7 @@ function backupReminderVisible(): boolean {
 function pendingReleveMonth(): string | null {
   const prev = addMonths(monthKeyOf(now()), -1);
   if (state.settings.relevesSent[prev] || state.settings.releveReminderDismissed === prev) return null;
-  return monthLines(prev, closedSessions()).length ? prev : null;
+  return monthLines(prev, closedSessions()).length || monthAstreintes(prev).length ? prev : null;
 }
 
 function renderPointer(): string {
@@ -248,7 +263,12 @@ function renderPointer(): string {
   const ctx = rateContext(t);
   const month = monthKeyOf(t);
   const totals = sumLines(monthLines(month, closedSessions()));
-  const gross = grossCents(totals.dayMin, totals.nightMin, state.settings.rateDayCents, state.settings.rateNightCents);
+  const nbAstreintes = monthAstreintes(month).length;
+  const gross =
+    grossCents(totals.dayMin, totals.nightMin, state.settings.rateDayCents, state.settings.rateNightCents) +
+    nbAstreintes * state.settings.astreinteCents;
+  const pause = activePause();
+  const today = dateKeyOf(t);
 
   let sessionCard: string;
   if (s) {
@@ -263,7 +283,23 @@ function renderPointer(): string {
       </div>
       <div class="chrono mono ${warn ? 'chrono-warn' : ''}" aria-live="polite">${fmtClock(elapsedMin)}</div>
       ${tiles(live.dayMin, live.nightMin)}
-      <button type="button" class="btn btn-primary btn-xl" data-action="stop">${warn ? 'Terminer maintenant' : 'Terminer'}</button>
+      <div class="session-actions">
+        <button type="button" class="btn btn-outline btn-xl" data-action="pause">${icons.pause}<span>Pause</span></button>
+        <button type="button" class="btn btn-primary btn-xl" data-action="stop">${warn ? 'Terminer maintenant' : 'Terminer'}</button>
+      </div>
+    </section>`;
+  } else if (pause) {
+    const pauseMin = Math.max(0, Math.floor((t - pause) / MINUTE));
+    sessionCard = `<section class="card session-card" aria-label="Pause">
+      <div class="session-head">
+        <span class="dot dot-pause"></span>
+        <span class="strong">En pause</span>
+        <span class="muted push">depuis ${hhmmOf(pause)}</span>
+      </div>
+      <div class="chrono mono chrono-pause" aria-live="polite">${fmtClock(pauseMin)}</div>
+      <p class="muted small center pause-note">La pause n'est pas comptée. Reprendre ouvre la plage de l'après-midi.</p>
+      <button type="button" class="btn btn-primary btn-xl" data-action="resume">${icons.play}<span>Reprendre</span></button>
+      <button type="button" class="btn btn-ghost" data-action="end-pause">Terminer la journée</button>
     </section>`;
   } else {
     sessionCard = `<section class="card session-card" aria-label="Pointage">
@@ -311,7 +347,7 @@ function renderPointer(): string {
     ? `<section class="banner banner-info">
         <span>Le relevé ${deMonth(monthName(pending))} n'a pas encore été envoyé.</span>
         <div class="row-8">
-          <button type="button" class="btn btn-small" data-action="releve" data-month="${pending}">Envoyer</button>
+          <button type="button" class="btn btn-small" data-action="releve-choose" data-month="${pending}">Envoyer</button>
           <button type="button" class="btn btn-small btn-ghost" data-action="dismiss-releve" data-month="${pending}">Plus tard</button>
         </div>
       </section>`
@@ -339,6 +375,10 @@ function renderPointer(): string {
     ${update}
     ${alert}
     ${sessionCard}
+    <label class="card toggle-row astreinte-row">
+      <span class="row-8">${icons.moon}<span>Astreinte ce soir<br><span class="muted small">${hasAstreinte(today) ? 'cochée sur le relevé du ' + fmtShortDate(today).toLowerCase() : 'case à cocher sur le relevé'}</span></span></span>
+      <input type="checkbox" class="switch" data-toggle="astreinte" data-date="${today}" ${hasAstreinte(today) ? 'checked' : ''}>
+    </label>
     ${releve}
     <section class="card month-card" aria-label="Mois en cours">
       <div class="row-between">
@@ -349,6 +389,7 @@ function renderPointer(): string {
         <div class="stack-2"><span class="label-day">Heures jour</span><span class="big mono">${fmtDuration(totals.dayMin)}</span></div>
         <div class="stack-2"><span class="label-night">Heures nuit</span><span class="big mono">${fmtDuration(totals.nightMin)}</span></div>
       </div>
+      ${nbAstreintes ? `<span class="muted small">${nbAstreintes === 1 ? '1 soir' : `${nbAstreintes} soirs`} d'astreinte</span>` : ''}
       <div class="rule"></div>
       <div class="row-between">
         <div class="stack-2"><span class="muted small">Estimation brute</span><span class="muted xsmall">visible uniquement sur ce téléphone</span></div>
@@ -382,6 +423,7 @@ function renderHistorique(): string {
   const anomalies = findAnomalies(state.sessions, now());
   const flagged = new Set(lines.filter((l) => anomalies.has(l.sessionId)).map((l) => l.sessionId));
   const byDate = new Map<string, DayLine[]>();
+  for (const d of monthAstreintes(state.month)) byDate.set(d, []);
   for (const l of lines) {
     const arr = byDate.get(l.date) ?? [];
     arr.push(l);
@@ -421,11 +463,20 @@ function renderHistorique(): string {
                   </button>`,
                 )
                 .join('')}
+              ${
+                hasAstreinte(date)
+                  ? `<button type="button" class="line line-astreinte" data-action="remove-astreinte" data-date="${date}" aria-label="Retirer l'astreinte du ${fmtShortDate(date)}">
+                      <span class="line-main"><span class="line-head">${icons.moon}<span class="strong">Astreinte</span><span class="muted small">soir</span></span></span>
+                      <span class="line-go">${icons.close}</span>
+                    </button>`
+                  : ''
+              }
             </div>
           </article>`;
         })
         .join('')
     : `<p class="empty muted">Aucune prestation en ${monthName(state.month)}.</p>`;
+  const nbAst = monthAstreintes(state.month).length;
 
   const warn = flagged.size
     ? `<section class="banner banner-warn banner-compact" role="note">
@@ -437,7 +488,7 @@ function renderHistorique(): string {
   return `<main class="screen screen-history" aria-label="Historique">
     <header class="header">
       <h1 class="title">Historique</h1>
-      <button type="button" class="btn btn-outline" data-action="releve" data-month="${state.month}" ${lines.some((l) => !l.open) ? '' : 'disabled'}>${icons.file}<span>Relevé PDF</span></button>
+      <button type="button" class="btn btn-outline" data-action="releve-choose" data-month="${state.month}" ${lines.some((l) => !l.open) || monthAstreintes(state.month).length ? '' : 'disabled'}>${icons.file}<span>Relevé</span></button>
     </header>
     <div class="month-nav">
       <button type="button" class="icon-btn" data-action="month-prev" aria-label="Mois précédent">${icons.chevronLeft}</button>
@@ -445,6 +496,7 @@ function renderHistorique(): string {
       <button type="button" class="icon-btn" data-action="month-next" aria-label="Mois suivant">${icons.chevronRight}</button>
     </div>
     ${tiles(totals.dayMin, totals.nightMin, true)}
+    ${nbAst ? `<p class="status-line muted">${icons.moon}<span>${nbAst === 1 ? '1 soir' : `${nbAst} soirs`} d'astreinte</span></p>` : ''}
     ${releveStatus(lines)}
     ${warn}
     ${days.length ? '<p class="hint">Touche une entrée pour la modifier ou la supprimer.</p>' : ''}
@@ -473,6 +525,8 @@ function renderReglages(): string {
         <label class="field-row">Nom<input type="text" data-field="name" value="${esc(st.name)}" placeholder="Dr Nom Prénom" autocomplete="name"></label>
         <label class="field-row">Fonction<input type="text" data-field="role" value="${esc(st.role)}"></label>
         <label class="field-row">Service<input type="text" data-field="service" value="${esc(st.service)}"></label>
+        <label class="field-row field-col">Établissement (en-tête)
+          <textarea data-field="institution" rows="2" class="input-area">${esc(st.institution)}</textarea></label>
       </div>
     </section>
 
@@ -483,8 +537,10 @@ function renderReglages(): string {
           <span class="row-4 mono"><input class="input-rate mono" type="text" inputmode="decimal" data-field="rateDay" value="${euros(st.rateDayCents)}">€/h</span></label>
         <label class="field-row"><span class="row-8"><span class="swatch swatch-night"></span>Nuit · WE · fériés</span>
           <span class="row-4 mono"><input class="input-rate mono" type="text" inputmode="decimal" data-field="rateNight" value="${euros(st.rateNightCents)}">€/h</span></label>
+        <label class="field-row"><span class="row-8">${icons.moon}Astreinte · par soir</span>
+          <span class="row-4 mono"><input class="input-rate mono" type="text" inputmode="decimal" data-field="astreinte" value="${euros(st.astreinteCents)}">€</span></label>
       </div>
-      <p class="hint">Servent uniquement à l'estimation brute et à l'export comptable. Jamais imprimés sur le relevé, jamais envoyés ailleurs.</p>
+      <p class="hint">Servent uniquement à l'estimation brute et à l'export comptable. Jamais imprimés sur le relevé, jamais envoyés ailleurs. Laisse l'astreinte à 0 si elle n'est pas rémunérée.</p>
     </section>
 
     <section class="section">
@@ -534,7 +590,7 @@ function renderReglages(): string {
         </label>
         <button type="button" class="btn btn-small" data-action="export-year">${icons.download}<span>CSV</span></button>
       </div>
-      <p class="hint">Toutes les prestations terminées de l'année, avec heures et montants bruts, puis un récapitulatif mensuel. S'ouvre dans Numbers ou Excel.</p>
+      <p class="hint">Toutes les prestations terminées et les astreintes de l'année, avec heures et montants bruts, puis un récapitulatif mensuel. S'ouvre dans Numbers ou Excel.</p>
     </section>
 
     <section class="section">
@@ -586,6 +642,32 @@ function previewHtml(e: EditState): string {
 
 function renderEdit(e: EditState): string {
   const existing = e.id !== null;
+  const kindSwitch = existing
+    ? ''
+    : `<div class="segmented" role="radiogroup" aria-label="Type d'entrée">
+        <button type="button" role="radio" aria-checked="${e.kind === 'session'}" class="${e.kind === 'session' ? 'seg-on' : ''}" data-action="edit-kind" data-kind="session">Prestation</button>
+        <button type="button" role="radio" aria-checked="${e.kind === 'astreinte'}" class="${e.kind === 'astreinte' ? 'seg-on' : ''}" data-action="edit-kind" data-kind="astreinte">Astreinte</button>
+      </div>`;
+  if (e.kind === 'astreinte') {
+    const already = e.startDate && hasAstreinte(e.startDate);
+    return `<div class="overlay" role="dialog" aria-modal="true" aria-label="Soir d'astreinte">
+      <div class="overlay-top">
+        <button type="button" class="back-btn" data-action="edit-cancel">${icons.chevronLeft}<span>Annuler</span></button>
+      </div>
+      <div class="overlay-body">
+        <h1 class="title">Soir d'astreinte</h1>
+        ${kindSwitch}
+        <div class="card list-card">
+          <label class="field-row">Soir du
+            <input type="date" data-edit="startDate" value="${e.startDate}" class="input-boxed mono" aria-label="Date de l'astreinte"></label>
+        </div>
+        <p class="info-line">${icons.info}<span>${already ? 'Cette date est déjà cochée.' : "La case « Astreinte » sera cochée à cette date sur le relevé. Un rappel sur place se pointe comme une prestation."}</span></p>
+      </div>
+      <div class="overlay-actions">
+        <button type="button" class="btn btn-primary btn-lg" data-action="edit-save">Enregistrer</button>
+      </div>
+    </div>`;
+  }
   const title = !existing ? 'Nouvelle prestation' : e.wasOpen ? (e.keepOpen ? 'Session en cours' : 'Clôturer la session') : 'Modifier la prestation';
   return `<div class="overlay" role="dialog" aria-modal="true" aria-label="${title}">
     <div class="overlay-top">
@@ -593,6 +675,7 @@ function renderEdit(e: EditState): string {
     </div>
     <div class="overlay-body">
       <h1 class="title">${title}</h1>
+      ${kindSwitch}
       ${
         e.wasOpen
           ? `<label class="card toggle-row"><span>Session toujours en cours<br><span class="muted small">ne corriger que l'heure de début</span></span>
@@ -639,6 +722,20 @@ function renderEdit(e: EditState): string {
   </div>`;
 }
 
+function renderReleveSheet(month: string): string {
+  return `<div class="sheet-backdrop" data-action="releve-close">
+    <div class="sheet" role="dialog" aria-modal="true" aria-label="Relevé" data-stop>
+      <h2 class="sheet-title">État d'honoraires · ${monthName(month)}</h2>
+      <p class="muted small">Au format de la CSPO : tous les jours du mois, heures en décimales, sans montants.</p>
+      <div class="grid-2">
+        <button type="button" class="btn btn-primary" data-action="releve" data-month="${month}" data-format="pdf">${icons.file}<span>PDF</span></button>
+        <button type="button" class="btn btn-outline" data-action="releve" data-month="${month}" data-format="xlsx">${icons.download}<span>Excel</span></button>
+      </div>
+      <button type="button" class="btn btn-ghost" data-action="releve-close">Annuler</button>
+    </div>
+  </div>`;
+}
+
 function renderBackupSheet(): string {
   return `<div class="sheet-backdrop" data-action="backup-later">
     <div class="sheet" role="dialog" aria-modal="true" aria-label="Sauvegarde" data-stop>
@@ -675,6 +772,7 @@ function render(): void {
       ${navButton('reglages', 'Réglages', icons.sliders)}
     </nav>
     ${state.edit ? renderEdit(state.edit) : ''}
+    ${state.releveSheet ? renderReleveSheet(state.releveSheet) : ''}
     ${state.backupSheet ? renderBackupSheet() : ''}`;
   const next = root.querySelector('.screen');
   if (next && scroll) next.scrollTop = scroll;
@@ -692,7 +790,7 @@ let histDepth = 0;
 let ignorePops = 0;
 
 function wantedDepth(): number {
-  return (state.tab !== 'pointer' ? 1 : 0) + (state.edit || state.backupSheet ? 1 : 0);
+  return (state.tab !== 'pointer' ? 1 : 0) + (state.edit || state.backupSheet || state.releveSheet ? 1 : 0);
 }
 
 function syncHistory(): void {
@@ -714,9 +812,10 @@ function onPopState(ev: PopStateEvent): void {
     return;
   }
   histDepth = (ev.state as { pointageDepth?: number } | null)?.pointageDepth ?? 0;
-  if (state.edit || state.backupSheet) {
+  if (state.edit || state.backupSheet || state.releveSheet) {
     state.edit = null;
     state.backupSheet = false;
+    state.releveSheet = null;
   } else if (state.tab !== 'pointer') {
     state.tab = 'pointer';
   }
@@ -757,9 +856,76 @@ async function startSession(): Promise<void> {
   const t = floorToMinute(now());
   const id = newId();
   await upsert({ id, start: t, end: null, manual: false, note: '', updatedAt: now() });
-  await persistSettings({ alertSnoozeUntil: null });
+  await persistSettings({ alertSnoozeUntil: null, pauseStartedAt: null });
   render();
   toast(`Session démarrée à ${hhmmOf(t)}.`, { label: 'Annuler', run: undoTo(null, id) });
+}
+
+/** Pause de midi : la session du matin se termine maintenant ; « Reprendre » ouvrira celle de l'après-midi. */
+async function pauseSession(): Promise<void> {
+  const s = openSession();
+  if (!s) return;
+  const before = { ...s };
+  const end = floorToMinute(now());
+  if (end <= s.start) await drop(s.id);
+  else await upsert({ ...s, end, updatedAt: now() });
+  await persistSettings({ alertSnoozeUntil: null, pauseStartedAt: end });
+  render();
+  toast(`Pause à ${hhmmOf(end)}.`, {
+    label: 'Annuler',
+    run: async () => {
+      await upsert(before);
+      await persistSettings({ pauseStartedAt: null });
+      render();
+      toast('Action annulée.');
+    },
+  });
+}
+
+async function resumeSession(): Promise<void> {
+  const pausedAt = state.settings.pauseStartedAt;
+  const t = floorToMinute(now());
+  const id = newId();
+  await upsert({ id, start: t, end: null, manual: false, note: '', updatedAt: now() });
+  await persistSettings({ pauseStartedAt: null });
+  render();
+  toast(`Reprise à ${hhmmOf(t)}.`, {
+    label: 'Annuler',
+    run: async () => {
+      await drop(id);
+      await persistSettings({ pauseStartedAt: pausedAt });
+      render();
+      toast('Action annulée.');
+    },
+  });
+}
+
+async function endPause(): Promise<void> {
+  const pausedAt = state.settings.pauseStartedAt;
+  await persistSettings({ pauseStartedAt: null });
+  render();
+  toast('Journée terminée.', {
+    label: 'Annuler',
+    run: async () => {
+      await persistSettings({ pauseStartedAt: pausedAt });
+      render();
+    },
+  });
+}
+
+/** Coche ou décoche le soir d'astreinte d'une date, avec possibilité d'annuler. */
+async function setAstreinte(date: string, on: boolean): Promise<void> {
+  const before = state.settings.astreintes;
+  const next = on ? [...new Set([...before, date])].sort() : before.filter((d) => d !== date);
+  await persistSettings({ astreintes: next });
+  render();
+  toast(on ? `Astreinte cochée le ${fmtShortDate(date).toLowerCase()}.` : `Astreinte du ${fmtShortDate(date).toLowerCase()} retirée.`, {
+    label: 'Annuler',
+    run: async () => {
+      await persistSettings({ astreintes: before });
+      render();
+    },
+  });
 }
 
 async function stopSession(): Promise<void> {
@@ -781,11 +947,13 @@ async function stopSession(): Promise<void> {
 }
 
 function openEdit(id: string | null, closeOpenSession = false): void {
+  document.querySelector('.toast')?.remove();
   if (id) {
     const s = state.sessions.find((x) => x.id === id);
     if (!s) return;
     const end = s.end ?? floorToMinute(now());
     state.edit = {
+      kind: 'session',
       id,
       startDate: dateKeyOf(s.start),
       startTime: hhmmOf(s.start),
@@ -800,6 +968,7 @@ function openEdit(id: string | null, closeOpenSession = false): void {
     const date = state.month === monthKeyOf(now()) ? today : `${state.month}-01`;
     const { defaultStart, defaultEnd } = state.settings;
     state.edit = {
+      kind: 'session',
       id: null,
       startDate: date,
       startTime: defaultStart,
@@ -816,6 +985,20 @@ function openEdit(id: string | null, closeOpenSession = false): void {
 async function saveEdit(): Promise<void> {
   const e = state.edit;
   if (!e) return;
+  if (e.kind === 'astreinte') {
+    if (!e.startDate) {
+      toast('Choisis une date.');
+      return;
+    }
+    state.edit = null;
+    if (state.tab === 'historique') state.month = e.startDate.slice(0, 7);
+    if (hasAstreinte(e.startDate)) {
+      render();
+      toast('Cette date est déjà cochée.');
+      return;
+    }
+    return setAstreinte(e.startDate, true);
+  }
   const t = editTimes(e);
   if (!t) {
     toast(e.keepOpen ? 'Le début ne peut pas être dans le futur.' : 'La fin doit être après le début.');
@@ -864,14 +1047,28 @@ async function snoozeAlert(): Promise<void> {
   render();
 }
 
-async function sendReleve(month: string): Promise<void> {
+async function sendReleve(month: string, format: 'pdf' | 'xlsx'): Promise<void> {
   // une session encore ouverte n'a pas sa place sur un relevé remis aux RH
   const lines = monthLines(month, closedSessions());
-  if (!lines.length) {
+  if (!lines.length && !monthAstreintes(month).length) {
     toast('Aucune prestation terminée ce mois-là.');
     return;
   }
-  const file = buildReleve(month, lines, state.settings, dateKeyOf(now()));
+  state.releveSheet = null;
+  const data = buildReleveData(month, lines, state.settings.astreintes, isHoliday());
+  let file: File;
+  try {
+    file =
+      format === 'pdf'
+        ? buildRelevePdf(data, state.settings, dateKeyOf(now()))
+        : await (await import('../xlsx')).buildReleveXlsx(data, state.settings);
+  } catch (err) {
+    console.error(err);
+    render();
+    toast(format === 'xlsx' ? "Impossible de créer le fichier Excel (connexion nécessaire la première fois ?)." : 'Impossible de créer le PDF.');
+    return;
+  }
+  render();
   const outcome = await shareOrDownload(file);
   if (outcome !== 'cancelled') {
     await persistSettings({ relevesSent: { ...state.settings.relevesSent, [month]: now() } });
@@ -884,11 +1081,11 @@ async function sendReleve(month: string): Promise<void> {
 async function exportYear(): Promise<void> {
   const year = Number(root.querySelector<HTMLSelectElement>('#export-year')?.value ?? dateKeyOf(now()).slice(0, 4));
   const lines = linesFor(closedSessions(), isHoliday(), now()).filter((l) => l.date.startsWith(`${year}-`));
-  if (!lines.length) {
+  if (!lines.length && !state.settings.astreintes.some((d) => d.startsWith(`${year}-`))) {
     toast(`Aucune prestation terminée en ${year}.`);
     return;
   }
-  const csv = buildYearCsv(year, lines, state.settings);
+  const csv = buildYearCsv(year, lines, state.settings, state.settings.astreintes);
   const outcome = await shareOrDownload(new File([csv], `Prestations_${year}.csv`, { type: 'text/csv' }));
   if (outcome === 'downloaded') toast(DOWNLOADED);
 }
@@ -910,9 +1107,13 @@ async function importFile(file: File): Promise<void> {
     const raw = JSON.parse(await file.text());
     const result = await importBackup(raw, state.sessions);
     state.sessions = await loadSessions();
+    const imported = Array.isArray(raw?.settings?.astreintes)
+      ? (raw.settings.astreintes as unknown[]).filter((d): d is string => typeof d === 'string' && /^\d{4}-\d\d-\d\d$/.test(d))
+      : [];
+    if (imported.length) await persistSettings({ astreintes: [...new Set([...state.settings.astreintes, ...imported])].sort() });
     if (!state.settings.name && raw?.settings) {
-      const { lastBackup, alertSnoozeUntil, backupReminderDismissedAt, ...rest } = raw.settings as Settings;
-      void lastBackup; void alertSnoozeUntil; void backupReminderDismissedAt;
+      const { lastBackup, alertSnoozeUntil, backupReminderDismissedAt, pauseStartedAt, astreintes, ...rest } = raw.settings as Settings;
+      void lastBackup; void alertSnoozeUntil; void backupReminderDismissedAt; void pauseStartedAt; void astreintes;
       await persistSettings(rest);
     }
     toast(`Import : ${result.added} ajoutée(s), ${result.updated} mise(s) à jour.`);
@@ -922,9 +1123,9 @@ async function importFile(file: File): Promise<void> {
   render();
 }
 
-function parseRate(value: string): number | null {
+function parseRate(value: string, allowZero = false): number | null {
   const n = Number(value.replace(',', '.').replace(/[^\d.]/g, ''));
-  return Number.isFinite(n) && n > 0 && n < 1000 ? Math.round(n * 100) : null;
+  return Number.isFinite(n) && (allowZero ? n >= 0 : n > 0) && n < 10000 ? Math.round(n * 100) : null;
 }
 
 async function onClick(ev: Event): Promise<void> {
@@ -933,6 +1134,7 @@ async function onClick(ev: Event): Promise<void> {
   if (!el) return;
   // un clic dans la feuille ne doit pas la fermer via le fond
   if (el.classList.contains('sheet-backdrop') && target.closest('[data-stop]')) return;
+  // la ligne « Astreinte ce soir » est un interrupteur : son changement est traité dans onChange
   switch (el.dataset.action) {
     case 'tab':
       state.tab = el.dataset.tab as Tab;
@@ -954,7 +1156,23 @@ async function onClick(ev: Event): Promise<void> {
     case 'edit-cancel': state.edit = null; render(); break;
     case 'edit-save': return saveEdit();
     case 'edit-delete': return deleteEdit();
-    case 'releve': return sendReleve(el.dataset.month ?? state.month);
+    case 'releve-choose':
+      document.querySelector('.toast')?.remove(); // un message en cours masquerait la feuille
+      state.releveSheet = el.dataset.month ?? state.month;
+      render();
+      break;
+    case 'releve-close': state.releveSheet = null; render(); break;
+    case 'releve': return sendReleve(el.dataset.month ?? state.month, el.dataset.format === 'xlsx' ? 'xlsx' : 'pdf');
+    case 'pause': return pauseSession();
+    case 'resume': return resumeSession();
+    case 'end-pause': return endPause();
+    case 'remove-astreinte': return setAstreinte(el.dataset.date!, false);
+    case 'edit-kind':
+      if (state.edit && state.edit.id === null) {
+        state.edit.kind = el.dataset.kind === 'astreinte' ? 'astreinte' : 'session';
+        render();
+      }
+      break;
     case 'dismiss-releve': await persistSettings({ releveReminderDismissed: el.dataset.month ?? null }); render(); break;
     case 'export-year': return exportYear();
     case 'export': return exportBackup();
@@ -1005,9 +1223,23 @@ async function onChange(ev: Event): Promise<void> {
     render();
     return;
   }
+  if (input.dataset.toggle === 'astreinte' && input.dataset.date) {
+    await setAstreinte(input.dataset.date, input.checked);
+    return;
+  }
   const field = input.dataset.field;
   if (!field) return;
-  if (field === 'rateDay' || field === 'rateNight') {
+  if (field === 'astreinte') {
+    const cents = parseRate(input.value || '0', true);
+    if (cents === null) {
+      toast('Montant invalide.');
+      render();
+      return;
+    }
+    await persistSettings({ astreinteCents: cents });
+  } else if (field === 'institution') {
+    await persistSettings({ institution: input.value.trim() });
+  } else if (field === 'rateDay' || field === 'rateNight') {
     const cents = parseRate(input.value);
     if (cents === null) {
       toast('Montant invalide.');
@@ -1056,6 +1288,7 @@ export async function startApp(el: HTMLElement): Promise<void> {
     month: monthKeyOf(Date.now()),
     edit: null,
     backupSheet: false,
+    releveSheet: null,
     updateReady: null,
   };
   root.addEventListener('click', (e) => void onClick(e));

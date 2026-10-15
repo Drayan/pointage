@@ -43,13 +43,29 @@ Dans les deux cas, renseigner ensuite le nom dans Réglages (il apparaît sur le
 
 Sur Android, le relevé se partage vers Gmail, Outlook ou toute autre app de mail ; le Raccourci ci-dessous est propre à l'iPhone. La sauvegarde JSON est enregistrée dans Téléchargements, d'où elle peut être réimportée.
 
+## Relevé mensuel (état d'honoraires CSPO)
+
+Historique → **Relevé** → **PDF** ou **Excel**. Les deux reprennent le modèle de la Clinique Saint-Pierre :
+
+- une ligne par jour du mois, du 1er au dernier ; week-ends et jours fériés grisés ;
+- deux plages par jour : une journée continue est coupée à 12h (« matin » jusqu'à midi, « après-midi » ensuite) ; avec une pause de midi, la plage d'avant la pause va le matin et celle d'après l'après-midi ; une prestation de plus dans la journée (fin de garde à 2h, puis journée) ajoute une ligne à la même date ;
+- totaux jour et nuit en heures décimales (9,25 h = 9 h 15), case Astreinte, cadre « Cachet et signature » ;
+- une garde à cheval sur deux mois est coupée à minuit : chaque relevé ne compte que ses propres jours.
+
+Le relevé ne contient jamais de montant. À envoyer à DirMed_Prestations_indep@cspo.be début du mois qui suit les prestations.
+
+## Pause de midi et astreinte
+
+- **Pause** (pendant une session) termine la plage du matin ; **Reprendre** ouvre celle de l'après-midi. La pause n'est pas comptée.
+- **Astreinte ce soir** (écran Pointer) coche la case Astreinte du jour ; Historique → Ajouter → **Astreinte** pour une autre date. Un rappel sur place se pointe normalement. Un forfait par soir peut être indiqué dans Réglages pour l'estimation brute (0 par défaut).
+
 ## Raccourci iOS facultatif « Relevé → CSPO »
 
 Pour envoyer le relevé à son adresse professionnelle en un tap depuis la feuille de partage :
 
 1. App **Raccourcis** → nouveau raccourci, nommé « Relevé → CSPO ».
 2. Dans les détails du raccourci, activer **Afficher dans la feuille de partage**, types acceptés : **Fichiers / PDF**.
-3. Ajouter l'action **Envoyer un e-mail** : destinataire = l'adresse CSPO, objet « Relevé de prestations », pièce jointe = **Entrée du raccourci**.
+3. Ajouter l'action **Envoyer un e-mail** : destinataire = DirMed_Prestations_indep@cspo.be (ou sa propre adresse CSPO pour imprimer au bureau), objet « État d'honoraires », pièce jointe = **Entrée du raccourci**.
 4. Dans cette action, désactiver **Afficher lors de l'exécution** pour un envoi direct (l'app Mail doit être configurée).
 
 Le raccourci peut ensuite être partagé aux collègues par lien iCloud ; chacun y met sa propre adresse à l'installation.
@@ -70,7 +86,9 @@ Structure :
 | `src/core/` | fonctions pures : fuseau de Bruxelles, jours fériés (calcul de Pâques), découpage jour/nuit, mise en forme ; tests dans `core.test.ts` |
 | `src/data/` | stockage IndexedDB, sauvegarde et import (fusion par identifiant) |
 | `src/ui/` | les écrans et la feuille de correction |
-| `src/pdf.ts` | génération du relevé A4 (jsPDF) |
+| `src/core/releve.ts` | lignes du relevé CSPO : plages matin / après-midi, heures décimales, astreintes ; tests dans `releve.test.ts` |
+| `src/pdf.ts` | relevé A4 au format CSPO (jsPDF) |
+| `src/xlsx.ts` | relevé Excel au format CSPO (exceljs, chargé au premier export) |
 | `src/share.ts` | feuille de partage, ou téléchargement à défaut |
 
 Le principe : seules les sessions brutes (début, fin) sont stockées ; les lignes par jour, les totaux et l'estimation sont recalculés à l'affichage. Toutes les heures sont interprétées en heure de Bruxelles, quel que soit le fuseau du téléphone, et les nuits de changement d'heure comptent leur durée réelle.

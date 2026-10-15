@@ -44,6 +44,10 @@ export default defineConfig({
       },
     }),
   ],
+  build: {
+    // la bibliothèque Excel (≈ 250 Ko compressés) est chargée à part, au premier export
+    chunkSizeWarningLimit: 1000,
+  },
   test: {
     include: ['src/**/*.test.ts'],
   },

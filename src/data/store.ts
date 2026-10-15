@@ -24,6 +24,10 @@ export interface Settings {
   relevesSent: Record<string, number>; // 'AAAA-MM' -> instant du dernier envoi
   releveReminderDismissed: string | null; // mois dont le rappel d'envoi a été écarté
   installHintDismissed: boolean;
+  institution: string; // en-tête du relevé, une ligne par retour à la ligne
+  astreintes: string[]; // 'AAAA-MM-JJ' : soirs d'astreinte (date où l'astreinte commence)
+  astreinteCents: number; // forfait par soir d'astreinte, pour l'estimation (0 = non rémunéré)
+  pauseStartedAt: number | null; // pause de midi en cours
   lastBackup: number | null;
   alertSnoozeUntil: number | null; // l'alerte de session ouverte est masquée jusqu'à cet instant
   backupReminderDismissedAt: number | null;
@@ -42,6 +46,10 @@ export const DEFAULT_SETTINGS: Settings = {
   relevesSent: {},
   releveReminderDismissed: null,
   installHintDismissed: false,
+  institution: 'CLINIQUE SAINT-PIERRE A.S.B.L.\n1340 OTTIGNIES',
+  astreintes: [],
+  astreinteCents: 0,
+  pauseStartedAt: null,
   lastBackup: null,
   alertSnoozeUntil: null,
   backupReminderDismissedAt: null,
