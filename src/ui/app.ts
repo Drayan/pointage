@@ -14,6 +14,7 @@ import {
   saveSettings, type Session, type Settings,
 } from '../data/store';
 import { buildReleveData } from '../core/releve';
+import { overallWeeklyAverage, weeklyAverage, type WeeklyAverage } from '../core/stats';
 import { buildRelevePdf } from '../pdf';
 import { shareOrDownload } from '../share';
 import { icons } from './icons';
@@ -80,6 +81,23 @@ function activePause(): number | null {
   if (!p || openSession()) return null;
   if (dateKeyOf(p) !== dateKeyOf(now()) || now() - p > PAUSE_MAX_MS) return null;
   return p;
+}
+
+/** « 47h05 » par semaine, ou un tiret quand la période est vide. */
+const fmtWeekly = (a: WeeklyAverage | null) => (a ? fmtDuration(a.minutesPerWeek) : '—');
+
+/** Moyenne hebdomadaire d'un mois : jusqu'à aujourd'hui pour le mois en cours, tout le mois sinon. */
+function monthWeeklyAverage(monthKey: string): WeeklyAverage | null {
+  const today = dateKeyOf(now());
+  const lines = linesFor(state.sessions, isHoliday(), now());
+  if (!lines.length) return null;
+  // le premier mois ne compte qu'à partir du premier jour pointé
+  const firstDay = lines.reduce((m, l) => (l.date < m ? l.date : m), lines[0].date);
+  const monthStart = `${monthKey}-01`;
+  const from = firstDay > monthStart ? firstDay : monthStart;
+  if (from > today) return null;
+  const end = monthKey === monthKeyOf(now()) ? today : `${monthKey}-${String(new Date(Date.UTC(Number(monthKey.slice(0, 4)), Number(monthKey.slice(5)), 0)).getUTCDate()).padStart(2, '0')}`;
+  return weeklyAverage(lines, from, end);
 }
 
 const hasAstreinte = (date: string) => state.settings.astreintes.includes(date);
@@ -259,6 +277,20 @@ function pendingReleveMonth(): string | null {
   return monthLines(prev, closedSessions()).length || monthAstreintes(prev).length ? prev : null;
 }
 
+function averagesHtml(): string {
+  const all = linesFor(state.sessions, isHoliday(), now());
+  const overall = overallWeeklyAverage(all, dateKeyOf(now()));
+  if (!overall) return '';
+  const month = monthWeeklyAverage(monthKeyOf(now()));
+  const since = fmtShortDate(overall.from).slice(4);
+  return `<div class="rule"></div>
+    <div class="stack-8">
+      <span class="muted small strong">Moyenne par semaine</span>
+      <div class="avg-row"><span>Ce mois</span><span class="muted xsmall">sur ${month?.days ?? 0} jour${(month?.days ?? 0) > 1 ? 's' : ''}</span><span class="mono strong">${fmtWeekly(month)}</span></div>
+      <div class="avg-row"><span>Générale</span><span class="muted xsmall">depuis le ${since}</span><span class="mono strong">${fmtWeekly(overall)}</span></div>
+    </div>`;
+}
+
 function renderPointer(): string {
   const t = now();
   const s = openSession();
@@ -392,6 +424,7 @@ function renderPointer(): string {
         <div class="stack-2"><span class="label-night">Heures nuit</span><span class="big mono">${fmtDuration(totals.nightMin)}</span></div>
       </div>
       ${nbAstreintes ? `<span class="muted small">${nbAstreintes === 1 ? '1 soir' : `${nbAstreintes} soirs`} d'astreinte</span>` : ''}
+      ${averagesHtml()}
       <div class="rule"></div>
       <div class="row-between">
         <div class="stack-2"><span class="muted small">Estimation brute</span><span class="muted xsmall">visible uniquement sur ce téléphone</span></div>
@@ -498,6 +531,12 @@ function renderHistorique(): string {
       <button type="button" class="icon-btn" data-action="month-next" aria-label="Mois suivant">${icons.chevronRight}</button>
     </div>
     ${tiles(totals.dayMin, totals.nightMin, true)}
+    ${(() => {
+      const avg = monthWeeklyAverage(state.month);
+      return avg && lines.length
+        ? `<p class="status-line muted">${icons.clock.replace('width="24" height="24"', 'width="16" height="16"')}<span>Moyenne : <strong class="mono">${fmtWeekly(avg)}</strong> par semaine${avg.days < 28 ? ` (sur ${avg.days} jour${avg.days > 1 ? 's' : ''})` : ''}</span></p>`
+        : '';
+    })()}
     ${nbAst ? `<p class="status-line muted">${icons.moon}<span>${nbAst === 1 ? '1 soir' : `${nbAst} soirs`} d'astreinte</span></p>` : ''}
     ${releveStatus(lines)}
     ${warn}

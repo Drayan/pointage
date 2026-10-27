@@ -59,6 +59,10 @@ Le relevé ne contient jamais de montant. À envoyer à DirMed_Prestations_indep
 - **Pause** (pendant une session) termine la plage du matin ; **Reprendre** ouvre celle de l'après-midi. La pause n'est pas comptée.
 - **Astreinte ce soir** (écran Pointer) coche la case Astreinte du jour ; pour une autre date, l'interrupteur **Soir d'astreinte** dans la modification d'une entrée, ou Historique → Ajouter → **Astreinte** pour un jour sans prestation. Un rappel sur place se pointe normalement. Un forfait par soir peut être indiqué dans Réglages pour l'estimation brute (0 par défaut).
 
+## Moyenne par semaine
+
+L'écran Pointer affiche la moyenne d'heures par semaine **du mois en cours** (du 1er à aujourd'hui) et **générale** (depuis le premier jour pointé) ; l'historique affiche celle du mois consulté. Calcul : heures de la période ÷ jours écoulés × 7. Les jours sans prestation (congés, récupération) comptent, c'est donc la moyenne réelle sur la période. La session en cours est incluse.
+
 ## Raccourci iOS facultatif « Relevé → CSPO »
 
 Pour envoyer le relevé à son adresse professionnelle en un tap depuis la feuille de partage :
@@ -87,6 +91,7 @@ Structure :
 | `src/data/` | stockage IndexedDB, sauvegarde et import (fusion par identifiant) |
 | `src/ui/` | les écrans et la feuille de correction |
 | `src/core/releve.ts` | lignes du relevé CSPO : plages matin / après-midi, heures décimales, astreintes ; tests dans `releve.test.ts` |
+| `src/core/stats.ts` | moyennes d'heures par semaine ; tests dans `stats.test.ts` |
 | `src/pdf.ts` | relevé A4 au format CSPO (jsPDF) |
 | `src/xlsx.ts` | relevé Excel au format CSPO (exceljs, chargé au premier export) |
 | `src/share.ts` | feuille de partage, ou téléchargement à défaut |
