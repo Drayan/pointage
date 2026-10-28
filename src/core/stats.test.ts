@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { makeHolidayChecker } from './holidays';
 import { linesFor, type SessionLike } from './split';
-import { daysInclusive, overallWeeklyAverage, weeklyAverage } from './stats';
+import { daysInclusive, isoWeek, overallWeeklyAverage, weekStart, weekTotals, weeklyAverage } from './stats';
 import { instantOf } from './time';
 
 const isHoliday = makeHolidayChecker();
@@ -44,5 +44,31 @@ describe('moyenne par semaine', () => {
     const avg = overallWeeklyAverage(lines, '2026-10-14');
     expect(avg).toMatchObject({ from: '2026-10-01', days: 14, minutesPerWeek: 10 * 60 });
     expect(overallWeeklyAverage([], '2026-10-14')).toBeNull();
+  });
+});
+
+describe('semaines ISO', () => {
+  it('lundi de la semaine', () => {
+    expect(weekStart('2026-10-28')).toBe('2026-10-26'); // mercredi
+    expect(weekStart('2026-11-01')).toBe('2026-10-26'); // dimanche
+    expect(weekStart('2026-10-26')).toBe('2026-10-26'); // lundi
+  });
+
+  it('numéros de semaine, y compris autour du nouvel an', () => {
+    expect(isoWeek('2026-10-28')).toEqual({ year: 2026, week: 44 });
+    expect(isoWeek('2026-01-01')).toEqual({ year: 2026, week: 1 }); // jeudi
+    expect(isoWeek('2027-01-01')).toEqual({ year: 2026, week: 53 }); // vendredi : dernière semaine de 2026
+    expect(isoWeek('2025-12-29')).toEqual({ year: 2026, week: 1 }); // lundi de la semaine 1 de 2026
+    expect(isoWeek('2021-01-03')).toEqual({ year: 2020, week: 53 });
+  });
+
+  it('total d’une semaine à cheval sur deux mois', () => {
+    const lines = linesFor(
+      [s(['2026-09-28', '08:00'], ['2026-09-28', '18:00']), s(['2026-10-02', '08:00'], ['2026-10-02', '20:00'])],
+      isHoliday,
+      0,
+    );
+    expect(weekTotals(lines, '2026-09-28')).toEqual({ dayMin: 1200, nightMin: 120 });
+    expect(weekTotals(lines, '2026-10-05')).toEqual({ dayMin: 0, nightMin: 0 });
   });
 });

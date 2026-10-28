@@ -324,3 +324,16 @@ select.input-boxed { appearance: none; -webkit-appearance: none; border: none; p
 /* ---------- Ajouts v1.4 : moyennes ---------- */
 .avg-row { display: grid; grid-template-columns: auto 1fr auto; align-items: baseline; gap: 8px; font-size: 15px; }
 .avg-row .mono { font-size: 17px; }
+
+/* ---------- Ajouts v1.5 : séparation par semaine ---------- */
+.week-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; padding: 14px 4px 8px; border-bottom: 2px solid var(--line); margin-top: 4px; }
+.day-list > .week-head:first-child { margin-top: 0; padding-top: 4px; }
+.week-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 16px; }
+.week-total { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right; }
+.week-hours { font-size: 20px; font-weight: 600; }
+.week-over { border-bottom-color: var(--warn-strong); }
+.week-over .week-hours { color: var(--warn-strong); }
+.stepper-wide { width: 56px; }
+.week-title { flex: 1; min-width: 0; }
+.week-total { flex-shrink: 0; }
+.week-total .xsmall { white-space: nowrap; }

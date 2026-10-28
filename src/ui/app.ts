@@ -14,7 +14,7 @@ import {
   saveSettings, type Session, type Settings,
 } from '../data/store';
 import { buildReleveData } from '../core/releve';
-import { overallWeeklyAverage, weeklyAverage, type WeeklyAverage } from '../core/stats';
+import { isoWeek, overallWeeklyAverage, weekStart, weekTotals, weeklyAverage, type WeeklyAverage } from '../core/stats';
 import { buildRelevePdf } from '../pdf';
 import { shareOrDownload } from '../share';
 import { icons } from './icons';
@@ -451,6 +451,41 @@ function releveStatus(lines: readonly DayLine[]): string {
   return '';
 }
 
+const MONTHS_SHORT = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+
+/** '2026-10-19' -> '19 – 25 oct.' ; '2026-09-28' -> '28 sept. – 4 oct.'. */
+function weekRangeLabel(monday: string): string {
+  const sunday = addDays(monday, 6);
+  const a = parseKey(monday);
+  const b = parseKey(sunday);
+  return a.month === b.month
+    ? `${a.day} – ${b.day} ${MONTHS_SHORT[b.month - 1]}`
+    : `${a.day} ${MONTHS_SHORT[a.month - 1]} – ${b.day} ${MONTHS_SHORT[b.month - 1]}`;
+}
+
+/** Ligne de séparation d'une semaine : numéro, dates, total de la semaine complète. */
+function weekHeader(monday: string, allLines: readonly DayLine[]): string {
+  const { week } = isoWeek(monday);
+  const tot = weekTotals(allLines, monday);
+  const total = tot.dayMin + tot.nightMin;
+  const current = monday === weekStart(dateKeyOf(now()));
+  const spansMonths = monday.slice(0, 7) !== addDays(monday, 6).slice(0, 7);
+  const threshold = state.settings.weekAlertHours;
+  const over = threshold > 0 && total > threshold * 60;
+  return `<div class="week-head ${over ? 'week-over' : ''}" role="heading" aria-level="2">
+    <div class="week-title">
+      <span class="strong">Sem. ${week}</span>
+      <span class="muted small">${weekRangeLabel(monday)}</span>
+      ${current ? '<span class="tag tag-live">en cours</span>' : ''}
+      ${over ? `<span class="tag tag-warn">plus de ${threshold} h</span>` : ''}
+    </div>
+    <div class="week-total">
+      <span class="mono week-hours">${fmtDuration(total)}</span>
+      <span class="muted xsmall">J ${fmtDuration(tot.dayMin)} · N ${fmtDuration(tot.nightMin)}${spansMonths ? ' · semaine complète' : ''}</span>
+    </div>
+  </div>`;
+}
+
 function renderHistorique(): string {
   const lines = monthLines(state.month);
   const totals = sumLines(lines);
@@ -465,13 +500,18 @@ function renderHistorique(): string {
     byDate.set(l.date, arr);
   }
   const days = [...byDate.entries()].sort((a, b) => b[0].localeCompare(a[0]));
+  const allLines = linesFor(state.sessions, isHoliday(), now());
+  let shownWeek = '';
 
   const list = days.length
     ? days
         .map(([date, ls]) => {
           const wd = weekdayOf(date);
           const tag = hc(date) ? 'Férié' : wd === 0 || wd === 6 ? 'WE' : '';
-          return `<article class="card day-card">
+          const monday = weekStart(date);
+          const header = monday !== shownWeek ? weekHeader(monday, allLines) : '';
+          shownWeek = monday;
+          return `${header}<article class="card day-card">
             <div class="day-label">
               <span class="day-dow">${DOW_SHORT[wd]}</span>
               <span class="day-num">${parseKey(date).day}</span>
@@ -601,6 +641,14 @@ function renderReglages(): string {
           <button type="button" class="icon-btn bordered" data-action="alert-dec" aria-label="Diminuer">−</button>
           <span class="mono strong stepper-value">${st.alertHours} h</span>
           <button type="button" class="icon-btn bordered" data-action="alert-inc" aria-label="Augmenter">+</button>
+        </div>
+      </div>
+      <div class="card stepper-card">
+        <span>Semaine chargée<br><span class="muted small">signalée dans l'historique au-delà de</span></span>
+        <div class="row-6">
+          <button type="button" class="icon-btn bordered" data-action="week-alert-dec" aria-label="Diminuer le seuil">−</button>
+          <span class="mono strong stepper-value stepper-wide">${st.weekAlertHours ? `${st.weekAlertHours} h` : 'non'}</span>
+          <button type="button" class="icon-btn bordered" data-action="week-alert-inc" aria-label="Augmenter le seuil">+</button>
         </div>
       </div>
     </section>
@@ -1244,6 +1292,16 @@ async function onClick(ev: Event): Promise<void> {
     case 'import': root.querySelector<HTMLInputElement>('#import-file')?.click(); break;
     case 'backup-later': state.backupSheet = false; render(); break;
     case 'dismiss-backup': await persistSettings({ backupReminderDismissedAt: now() }); render(); break;
+    case 'week-alert-dec':
+    case 'week-alert-inc': {
+      // désactivé (0), puis de 40 à 80 h par pas de 4 h
+      const cur = state.settings.weekAlertHours;
+      const up = el.dataset.action === 'week-alert-inc';
+      const v = up ? (cur === 0 ? 48 : Math.min(80, cur + 4)) : cur <= 40 ? 0 : cur - 4;
+      await persistSettings({ weekAlertHours: v });
+      render();
+      break;
+    }
     case 'alert-dec':
     case 'alert-inc': {
       const delta = el.dataset.action === 'alert-inc' ? 1 : -1;

@@ -1,7 +1,7 @@
 // Moyennes d'heures par semaine.
 
 import type { DayLine } from './split';
-import { parseKey } from './time';
+import { addDays, parseKey, weekdayOf } from './time';
 
 /** Nombre de jours de `from` à `to`, bornes comprises (0 si `to` précède `from`). */
 export function daysInclusive(from: string, to: string): number {
@@ -37,4 +37,35 @@ export function overallWeeklyAverage(lines: readonly DayLine[], today: string): 
   if (!past.length) return null;
   const first = past.reduce((m, l) => (l.date < m ? l.date : m), past[0].date);
   return weeklyAverage(past, first, today);
+}
+
+// ---------- Semaines ISO (du lundi au dimanche) ----------
+
+/** Lundi de la semaine d'une date. */
+export function weekStart(date: string): string {
+  const wd = weekdayOf(date); // 0 = dimanche
+  return addDays(date, wd === 0 ? -6 : 1 - wd);
+}
+
+/** Numéro de semaine ISO 8601 : la semaine 1 est celle qui contient le premier jeudi de l'année. */
+export function isoWeek(date: string): { year: number; week: number } {
+  const thursday = addDays(weekStart(date), 3);
+  const year = Number(thursday.slice(0, 4));
+  const jan1 = `${year}-01-01`;
+  const dayOfYear = daysInclusive(jan1, thursday); // 1 = 1er janvier
+  return { year, week: Math.floor((dayOfYear - 1) / 7) + 1 };
+}
+
+/** Total jour / nuit d'une semaine complète (du lundi `monday` au dimanche). */
+export function weekTotals(lines: readonly DayLine[], monday: string): { dayMin: number; nightMin: number } {
+  const sunday = addDays(monday, 6);
+  let dayMin = 0;
+  let nightMin = 0;
+  for (const l of lines) {
+    if (l.date >= monday && l.date <= sunday) {
+      dayMin += l.dayMin;
+      nightMin += l.nightMin;
+    }
+  }
+  return { dayMin, nightMin };
 }

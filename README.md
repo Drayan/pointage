@@ -63,6 +63,8 @@ Le relevé ne contient jamais de montant. À envoyer à DirMed_Prestations_indep
 
 L'écran Pointer affiche la moyenne d'heures par semaine **du mois en cours** (du 1er à aujourd'hui) et **générale** (depuis le premier jour pointé) ; l'historique affiche celle du mois consulté. Calcul : heures de la période ÷ jours écoulés × 7. Les jours sans prestation (congés, récupération) comptent, c'est donc la moyenne réelle sur la période. La session en cours est incluse.
 
+Dans l'historique, les jours sont regroupés par **semaine ISO** (du lundi au dimanche). Chaque séparation indique le numéro de semaine, ses dates et le **total d'heures de la semaine complète** (jour / nuit), y compris pour une semaine à cheval sur deux mois. Un seuil facultatif (Réglages → Alerte → Semaine chargée, de 40 à 80 h) signale les semaines qui le dépassent.
+
 ## Raccourci iOS facultatif « Relevé → CSPO »
 
 Pour envoyer le relevé à son adresse professionnelle en un tap depuis la feuille de partage :

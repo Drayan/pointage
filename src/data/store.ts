@@ -18,6 +18,7 @@ export interface Settings {
   rateDayCents: number;
   rateNightCents: number;
   alertHours: number;
+  weekAlertHours: number; // semaine signalée au-delà de ce total (0 = désactivé)
   defaultStart: string; // 'HH:MM', pré-remplissage d'une nouvelle entrée
   defaultEnd: string;
   extraHolidays: string[]; // 'AAAA-MM-JJ'
@@ -40,6 +41,7 @@ export const DEFAULT_SETTINGS: Settings = {
   rateDayCents: 2600,
   rateNightCents: 3400,
   alertHours: 11,
+  weekAlertHours: 0,
   defaultStart: '08:00',
   defaultEnd: '18:00',
   extraHolidays: [],
